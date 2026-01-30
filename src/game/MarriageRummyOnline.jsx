@@ -248,6 +248,8 @@ export default function MarriageRummyOnline() {
     newRoom.id = key;
     if (meName.trim()) newRoom.players[0].name = meName.trim();
 
+    console.log("[Create] Writing /rooms/" + key, newRoom); // debug line
+
     set(ref(db, `rooms/${key}`), newRoom)
       .then(() => {
         setRoomId(key);
