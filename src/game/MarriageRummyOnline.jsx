@@ -4,8 +4,9 @@ import React, { useEffect, useState } from "react";
 // ------------------------------
 // Firebase (Realtime Database)
 // ------------------------------
+
 import { initializeApp, getApps, getApp } from "firebase/app";
-import { getDatabase } from "firebase/database";
+import { getDatabase, ref, set, update, push, onValue } from "firebase/database";
 
 // prefer build-time Vite env; only fall back to window if truly missing
 const env = import.meta.env || {};
