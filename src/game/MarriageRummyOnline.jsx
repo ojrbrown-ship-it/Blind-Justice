@@ -7,18 +7,47 @@ import React, { useEffect, useState } from "react";
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getDatabase, ref, onValue, set, update, push } from "firebase/database";
 
-// Resolve Firebase config (Vercel env via Vite or window.__FIREBASE_CONFIG__)
-const ENV_CFG = {
-  apiKey: import.meta?.env?.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta?.env?.VITE_FIREBASE_AUTH_DOMAIN,
-  databaseURL: import.meta?.env?.VITE_FIREBASE_DATABASE_URL,
-  projectId: import.meta?.env?.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta?.env?.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta?.env?.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta?.env?.VITE_FIREBASE_APP_ID
+/**
+ * Prefer build-time env (import.meta.env.*) and fall back to a runtime
+ * window.__FIREBASE_CONFIG__ (in case you still keep the HTML bridge).
+ */
+const FIREBASE_CONFIG = {
+  apiKey:
+    import.meta?.env?.VITE_FIREBASE_API_KEY ||
+    (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.apiKey : undefined),
+  authDomain:
+    import.meta?.env?.VITE_FIREBASE_AUTH_DOMAIN ||
+    (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.authDomain : undefined),
+  databaseURL:
+    import.meta?.env?.VITE_FIREBASE_DATABASE_URL ||
+    (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.databaseURL : undefined),
+  projectId:
+    import.meta?.env?.VITE_FIREBASE_PROJECT_ID ||
+    (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.projectId : undefined),
+  storageBucket:
+    import.meta?.env?.VITE_FIREBASE_STORAGE_BUCKET ||
+    (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.storageBucket : undefined),
+  messagingSenderId:
+    import.meta?.env?.VITE_FIREBASE_MESSAGING_SENDER_ID ||
+    (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.messagingSenderId : undefined),
+  appId:
+    import.meta?.env?.VITE_FIREBASE_APP_ID ||
+    (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.appId : undefined),
+  // Optional
+  measurementId:
+    import.meta?.env?.VITE_FIREBASE_MEASUREMENT_ID ||
+    (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.measurementId : undefined),
 };
-const FIREBASE_CONFIG =
-  (typeof window !== "undefined" && window.__FIREBASE_CONFIG__) || ENV_CFG || {};
+
+// Helpful guard (will show once if something is missing)
+if (!FIREBASE_CONFIG?.databaseURL || !FIREBASE_CONFIG?.projectId) {
+  // This will appear in the browser console and helps diagnose env var issues quickly
+  console.error(
+    "[Firebase] Missing databaseURL or projectId. " +
+      "Check Vercel env vars (Project → Settings → Environment Variables). " +
+      "You need VITE_FIREBASE_DATABASE_URL and VITE_FIREBASE_PROJECT_ID set for this project."
+  );
+}
 
 const app = getApps().length ? getApp() : initializeApp(FIREBASE_CONFIG);
 const db = getDatabase(app);
@@ -50,7 +79,7 @@ function generateDeck(numDecks = 3) {
         cards.push({
           id: `${d}-${suit}-${rank}-${Math.random().toString(36).slice(2, 8)}`,
           suit,
-          rank
+          rank,
         });
       }
     }
@@ -69,7 +98,6 @@ function isLower(card, hidden) {
 function isWild(card, hidden) {
   return card.rank === hidden.rank || isUpper(card, hidden) || isLower(card, hidden);
 }
-
 function roundToNearest10(n) {
   return Math.round(n / 10) * 10;
 }
@@ -81,7 +109,6 @@ function validatePureRun(cards) {
   if (cards.length < 3) return false;
   const suit = cards[0].suit;
   if (!cards.every((c) => c.suit === suit)) return false;
-  // sort by rank index, treat A as low in this pass
   const idxs = cards.map((c) => rankIndex(c.rank)).sort((a, b) => a - b);
   for (let i = 1; i < idxs.length; i++) {
     const gap = idxs[i] - idxs[i - 1];
@@ -93,26 +120,25 @@ function validatePureSet(cards) {
   if (cards.length < 3) return false;
   const r = cards[0].rank;
   if (!cards.every((c) => c.rank === r)) return false;
-  // all suits different
   const suits = new Set(cards.map((c) => c.suit));
-  return suits.size === cards.length;
+  return suits.size === cards.length; // all suits different
 }
 function validateRunWithWilds(cards, hidden) {
   if (cards.length < 3) return false;
   const nonWild = cards.filter((c) => !isWild(c, hidden));
-  if (nonWild.length === 0) return false; // require at least one natural
+  if (nonWild.length === 0) return false; // need at least one natural
   const suit = nonWild[0].suit;
   if (!nonWild.every((c) => c.suit === suit)) return false;
 
   const wildCount = cards.length - nonWild.length;
 
-  // low‑ace sequence
+  // Low‑ace mode (A as 1)
   const uniqLow = [...new Set(nonWild.map((c) => rankIndex(c.rank)))].sort((a, b) => a - b);
   let gaps = 0;
   for (let i = 1; i < uniqLow.length; i++) gaps += Math.max(0, uniqLow[i] - uniqLow[i - 1] - 1);
   const okLow = wildCount >= gaps;
 
-  // high‑ace sequence: map A(0) -> 13
+  // High‑ace mode (map A(0) to 13)
   const uniqHigh = uniqLow.map((v) => (v === 0 ? 13 : v)).sort((a, b) => a - b);
   let gapsHigh = 0;
   for (let i = 1; i < uniqHigh.length; i++)
@@ -127,8 +153,7 @@ function validateSetWithWilds(cards, hidden) {
   if (nonWild.length === 0) return false; // at least one natural
   const r = nonWild[0].rank;
   if (!nonWild.every((c) => c.rank === r)) return false;
-  // unique suits among non‑wilds
-  const suits = new Set(nonWild.map((c) => c.suit));
+  const suits = new Set(nonWild.map((c) => c.suit)); // distinct natural suits
   return suits.size === nonWild.length;
 }
 function validateMeldWildAware(m, deck, hidden) {
@@ -177,7 +202,7 @@ function createRoom(playersCount) {
     hasPeeked: false,
     hasPicked: false,
     earlyTunnelaAwarded: false,
-    chips: 250
+    chips: 250,
   }));
 
   // deal 21 each
@@ -193,8 +218,8 @@ function createRoom(playersCount) {
     options: {
       playersCount,
       requireThreePure: true, // fixed
-      allowPureSets: false,   // not counted towards threshold
-      useUpperLower: true     // always on
+      allowPureSets: false, // not counted towards threshold
+      useUpperLower: true, // always on
     },
     deck,
     stock: remaining,
@@ -206,7 +231,7 @@ function createRoom(playersCount) {
     seed,
     createdAt: Date.now(),
     lastAction: "Room created. Hidden joker set. Waiting to start.",
-    ledger: []
+    ledger: [],
   };
 }
 
@@ -249,7 +274,7 @@ export default function MarriageRummyOnline() {
   function takeSeat(seat) {
     if (!room || room.phase !== "LOBBY") return;
     update(ref(db, `rooms/${room.id}/players/${seat}`), {
-      name: meName.trim() || `Player ${seat + 1}`
+      name: meName.trim() || `Player ${seat + 1}`,
     });
     setMeSeat(seat);
   }
@@ -304,7 +329,7 @@ export default function MarriageRummyOnline() {
     dispatchAction({
       discard,
       players,
-      lastAction: `${players[room.current].name} took the discard.`
+      lastAction: `${players[room.current].name} took the discard.`,
     });
   }
 
@@ -449,7 +474,7 @@ export default function MarriageRummyOnline() {
       winnerSeat,
       postLayIndex: nextSeat,
       phase: "POST_LAYOFF",
-      lastAction
+      lastAction,
     });
   }
   function nextNonWinnerSeat(winnerSeat, n, from) {
@@ -495,7 +520,7 @@ export default function MarriageRummyOnline() {
     const U = count[`${suit}-${upperRank}`] || 0;
     const marriages = Math.min(L, J, U);
 
-    // Build list of singletons and remove the ones used in marriages
+    // remove the ones used in marriages from singletons
     const singlesDetail = [];
     for (const k in count) singlesDetail.push(...Array(count[k]).fill(k));
     const removeOne = (key) => {
@@ -531,7 +556,8 @@ export default function MarriageRummyOnline() {
       let chips = 0;
       if (rounded >= 100) chips = 25;
       else chips = (rounded / 10) * 2;
-      if (chips > 0) transferChips(p.seat, winner, chips, `Points ${points} -> ${rounded} (to winner)`);
+      if (chips > 0)
+        transferChips(p.seat, winner, chips, `Points ${points} -> ${rounded} (to winner)`);
     }
 
     // 2c) Pairwise wild/value bonuses on UNMELDED holdings
@@ -567,7 +593,7 @@ export default function MarriageRummyOnline() {
             onChange={(e) => setMeName(e.target.value)}
             placeholder="Enter name"
           />
-          <div className="grid grid-cols-2 gap-2 mt-2">
+        <div className="grid grid-cols-2 gap-2 mt-2">
             <div className="p-3 rounded-xl bg-gray-50 border">
               <div className="text-xs text-gray-500 mb-1">Create room</div>
               <div className="flex items-center gap-2">
@@ -586,7 +612,7 @@ export default function MarriageRummyOnline() {
             </div>
             <div className="p-3 rounded-xl bg-gray-50 border">
               <div className="text-xs text-gray-500 mb-1">Join room</div>
-              <JoinBox onJoin={joinRoom} />
+              <JoinBox onJoin={setRoomId} />
             </div>
           </div>
         </div>
@@ -605,7 +631,9 @@ export default function MarriageRummyOnline() {
           <div className="text-xs text-gray-500">Room</div>
           <div className="font-semibold break-all">{room.id}</div>
         </div>
-        <div className="text-right text-xs text-gray-500">Players: {room.options.playersCount}</div>
+        <div className="text-right text-xs text-gray-500">
+          Players: {room.options.playersCount}
+        </div>
       </div>
 
       {/* Lobby */}
@@ -627,13 +655,15 @@ export default function MarriageRummyOnline() {
                 </button>
               ))}
             </div>
-            <div className="mt-3 text-xs text-gray-500">Tap a seat to set your name there.</div>
+            <div className="mt-3 text-xs text-gray-500">
+              Tap a seat to set your name there.
+            </div>
           </div>
           <div className="p-3 bg-white rounded-2xl shadow">
             <div className="font-semibold mb-2">Hidden Joker</div>
             <div className="text-sm text-gray-600">
-              A random card has been set as the hidden joker. You can <b>peek</b> it only after
-              laying <b>3 pure melds</b> (pure runs or tunnela).
+              A random card has been set as the hidden joker. You can <b>peek</b>{" "}
+              it only after laying <b>3 pure melds</b> (pure runs or tunnela).
             </div>
             <div className="mt-3">
               {meSeat === 0 ? (
@@ -657,12 +687,8 @@ export default function MarriageRummyOnline() {
               <div className="font-semibold">{room.players[room.current].name}</div>
             </div>
             <div className="flex items-center gap-3 text-sm">
-              <div>
-                Stock <b>{room.stock.length}</b>
-              </div>
-              <div>
-                Discard <b>{room.discard.length}</b>
-              </div>
+              <div>Stock <b>{room.stock.length}</b></div>
+              <div>Discard <b>{room.discard.length}</b></div>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-gray-500">Hidden Joker</span>
                 {myPlayer()?.hasPeeked ? (
@@ -672,12 +698,8 @@ export default function MarriageRummyOnline() {
                 )}
               </div>
               <div>
-                <button onClick={drawStock} className={`${btn} bg-gray-900 mr-2`}>
-                  Draw
-                </button>
-                <button onClick={takeDiscard} className={`${btn} bg-amber-600`}>
-                  Pickup
-                </button>
+                <button onClick={drawStock} className={`${btn} bg-gray-900 mr-2`}>Draw</button>
+                <button onClick={takeDiscard} className={`${btn} bg-amber-600`}>Pickup</button>
               </div>
             </div>
           </div>
@@ -685,12 +707,19 @@ export default function MarriageRummyOnline() {
           {/* My Hand */}
           <div className="p-3 bg-white rounded-2xl shadow">
             <div className="flex items-center justify-between mb-2">
-              <div className="font-semibold">{myPlayer()?.name}'s Hand ({myPlayer()?.hand.length})</div>
+              <div className="font-semibold">
+                {myPlayer()?.name}'s Hand ({myPlayer()?.hand.length})
+              </div>
               <div className="text-xs text-gray-500">Tap cards, then Lay</div>
             </div>
             <div className="flex flex-wrap">
               {myPlayer()?.hand.map((id) => (
-                <Card key={id} card={room.deck[id]} selected={selected.includes(id)} onClick={() => toggleSelect(id)} />
+                <Card
+                  key={id}
+                  card={room.deck[id]}
+                  selected={selected.includes(id)}
+                  onClick={() => toggleSelect(id)}
+                />
               ))}
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
@@ -706,7 +735,10 @@ export default function MarriageRummyOnline() {
               <button onClick={() => layImpureSet(3)} className={`${btn} bg-purple-600`}>
                 Lay Set (impure)
               </button>
-              <button onClick={() => setSelected([])} className="px-3 py-3 rounded-xl bg-gray-200 text-gray-700 text-sm">
+              <button
+                onClick={() => setSelected([])}
+                className="px-3 py-3 rounded-xl bg-gray-200 text-gray-700 text-sm"
+              >
                 Clear
               </button>
             </div>
@@ -717,10 +749,17 @@ export default function MarriageRummyOnline() {
             <div className="font-semibold mb-2">Table</div>
             <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
               {room.players.map((p, idx) => (
-                <div key={p.id} className={`p-3 rounded-xl border ${idx === room.current ? "border-blue-600" : "border-gray-200"}`}>
+                <div
+                  key={p.id}
+                  className={`p-3 rounded-xl border ${
+                    idx === room.current ? "border-blue-600" : "border-gray-200"
+                  }`}
+                >
                   <div className="flex items-center justify-between">
                     <div className="font-medium truncate">{p.name}</div>
-                    <div className="text-[10px] text-gray-500">{idx === room.current ? "Playing" : ""}</div>
+                    <div className="text-[10px] text-gray-500">
+                      {idx === room.current ? "Playing" : ""}
+                    </div>
                   </div>
                   <div className="mt-1 text-xs">
                     Melds: {p.melds.length} | Hand: {p.hand.length}
@@ -746,19 +785,27 @@ export default function MarriageRummyOnline() {
               <div className="text-xs text-gray-500">
                 Post‑Declare Layoff — Winner: {room.players[room.winnerSeat].name}
               </div>
-              <div className="font-semibold">Now laying off: {room.players[room.postLayIndex].name}</div>
+              <div className="font-semibold">
+                Now laying off: {room.players[room.postLayIndex].name}
+              </div>
             </div>
           </div>
           <div className="p-3 bg-white rounded-2xl shadow">
             <div className="flex items-center justify-between mb-2">
               <div className="font-semibold">
-                {room.players[room.postLayIndex].name}'s Hand ({room.players[room.postLayIndex].hand.length})
+                {room.players[room.postLayIndex].name}'s Hand (
+                {room.players[room.postLayIndex].hand.length})
               </div>
               <div className="text-xs text-gray-500">Tap cards, then Lay Set</div>
             </div>
             <div className="flex flex-wrap">
               {room.players[room.postLayIndex].hand.map((id) => (
-                <Card key={id} card={room.deck[id]} selected={selected.includes(id)} onClick={() => toggleSelect(id)} />
+                <Card
+                  key={id}
+                  card={room.deck[id]}
+                  selected={selected.includes(id)}
+                  onClick={() => toggleSelect(id)}
+                />
               ))}
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
@@ -811,9 +858,7 @@ export default function MarriageRummyOnline() {
               {room.players.map((p) => (
                 <div key={p.id} className="p-3 rounded-xl border border-gray-200">
                   <div className="font-medium">{p.name}</div>
-                  <div className="text-sm">
-                    Chips: <b>{p.chips}</b>
-                  </div>
+                  <div className="text-sm">Chips: <b>{p.chips}</b></div>
                 </div>
               ))}
             </div>
@@ -886,31 +931,13 @@ function HowTo() {
     <div className="p-4 bg-white rounded-2xl shadow text-sm">
       <div className="font-semibold mb-1">How this variant works</div>
       <ul className="list-disc pl-5 space-y-1 text-gray-700">
-        <li>
-          Each player is dealt <b>21 cards</b> from <b>3 decks</b>. Everyone starts with <b>250 chips</b>.
-        </li>
-        <li>
-          Hidden joker (maal). Peek only after laying <b>3 pure melds</b> (pure runs or tunnela). Pure sets do not
-          count toward the threshold.
-        </li>
-        <li>
-          <b>Upper</b> and <b>Lower</b> (same suit as the joker, one rank above/below) are enabled.
-        </li>
-        <li>
-          <b>Early Tunnela:</b> If you lay a tunnela before your first pickup, each opponent pays you 10 chips.
-        </li>
-        <li>
-          <b>Declaration:</b> If you have qualified, your melds are checked with <b>wild‑aware</b> rules before the
-          hand can end.
-        </li>
-        <li>
-          <b>Post‑declare layoff:</b> Qualified players may lay <b>wild‑aware sets (3+)</b>. Not qualified: <b>strict
-          sets (4+)</b>.
-        </li>
-        <li>
-          <b>Settlement:</b> Points → winner (Swedish rounding, 2 chips per 10; ≥100 → 25). Then **pairwise** wild/value
-          bonuses: 5 chips per Joker/Upper/Lower/A♠(joker suit), 25 per complete L‑J‑U set.
-        </li>
+        <li>Each player is dealt <b>21 cards</b> from <b>3 decks</b>. Everyone starts with <b>250 chips</b>.</li>
+        <li>Hidden joker (maal). Peek only after laying <b>3 pure melds</b> (pure runs or tunnela). Pure sets do not count toward the threshold.</li>
+        <li><b>Upper</b> and <b>Lower</b> (same suit as the joker, one rank above/below) are enabled.</li>
+        <li><b>Early Tunnela:</b> If you lay a tunnela before your first pickup, each opponent pays you 10 chips.</li>
+        <li><b>Declaration:</b> If you have qualified, your melds are checked with <b>wild‑aware</b> rules before the hand can end.</li>
+        <li><b>Post‑declare layoff:</b> Qualified players may lay <b>wild‑aware sets (3+)</b>. Not qualified: <b>strict sets (4+)</b>.</li>
+        <li><b>Settlement:</b> Points → winner (Swedish rounding, 2 chips per 10; ≥100 → 25). Then pairwise wild/value bonuses: 5 chips per Joker/Upper/Lower/A of joker suit, 25 per complete L‑J‑U set.</li>
       </ul>
     </div>
   );
