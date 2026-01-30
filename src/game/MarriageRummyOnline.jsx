@@ -4,11 +4,13 @@ import React, { useEffect, useState } from "react";
 // ------------------------------
 // Firebase (Realtime Database)
 // ------------------------------
-
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getDatabase, ref, set, update, push, onValue } from "firebase/database";
 
-// prefer build-time Vite env; only fall back to window if truly missing
+/**
+ * Prefer build-time Vite env (import.meta.env) and fall back to a runtime
+ * window.__FIREBASE_CONFIG__ (if you keep an HTML bridge) only when needed.
+ */
 const env = import.meta.env || {};
 const FIREBASE_CONFIG = {
   apiKey:            env.VITE_FIREBASE_API_KEY        || (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.apiKey : undefined),
@@ -18,12 +20,17 @@ const FIREBASE_CONFIG = {
   storageBucket:     env.VITE_FIREBASE_STORAGE_BUCKET  || (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.storageBucket : undefined),
   messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.messagingSenderId : undefined),
   appId:             env.VITE_FIREBASE_APP_ID          || (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.appId : undefined),
+  // optional
   measurementId:     env.VITE_FIREBASE_MEASUREMENT_ID  || (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.measurementId : undefined),
 };
 
-// one-time guard
+// One-time guard to help diagnose missing envs quickly in the browser console
 if (!FIREBASE_CONFIG.databaseURL || !FIREBASE_CONFIG.projectId) {
-  console.error("[Firebase] Missing databaseURL or projectId. Check Vercel env vars for this project.");
+  console.error(
+    "[Firebase] Missing databaseURL or projectId. " +
+      "Check Vercel → Project → Settings → Environment Variables " +
+      "for VITE_FIREBASE_DATABASE_URL and VITE_FIREBASE_PROJECT_ID."
+  );
 }
 
 const app = getApps().length ? getApp() : initializeApp(FIREBASE_CONFIG);
@@ -34,7 +41,6 @@ const db  = getDatabase(app);
 // ------------------------------
 const SUITS = ["♠", "♥", "♦", "♣"];
 const RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"];
-
 const rankIndex = (r) => RANKS.indexOf(r);
 
 function shuffle(arr, seed) {
@@ -80,7 +86,7 @@ function roundToNearest10(n) {
 }
 
 // ------------------------------
-// Wild‑aware declare validators
+// Wild‑aware validators
 // ------------------------------
 function validatePureRun(cards) {
   if (cards.length < 3) return false;
@@ -109,7 +115,7 @@ function validateRunWithWilds(cards, hidden) {
 
   const wildCount = cards.length - nonWild.length;
 
-  // Low‑ace mode (A as 1)
+  // Low‑ace mode
   const uniqLow = [...new Set(nonWild.map((c) => rankIndex(c.rank)))].sort((a, b) => a - b);
   let gaps = 0;
   for (let i = 1; i < uniqLow.length; i++) gaps += Math.max(0, uniqLow[i] - uniqLow[i - 1] - 1);
@@ -182,7 +188,7 @@ function createRoom(playersCount) {
     chips: 250,
   }));
 
-  // deal 21 each
+  // deal 21 each (round-robin)
   let t = 0;
   for (let i = 0; i < playersCount * 21; i++) {
     players[t].hand.push(stock[i]);
@@ -194,9 +200,9 @@ function createRoom(playersCount) {
     id: "",
     options: {
       playersCount,
-      requireThreePure: true, // fixed
-      allowPureSets: false, // not counted towards threshold
-      useUpperLower: true, // always on
+      requireThreePure: true,
+      allowPureSets: false,
+      useUpperLower: true,
     },
     deck,
     stock: remaining,
@@ -223,7 +229,7 @@ export default function MarriageRummyOnline() {
   const [playersCount, setPlayersCount] = useState(3);
   const [selected, setSelected] = useState([]);
 
-  // subscribe to room
+  // Subscribe to room
   useEffect(() => {
     if (!roomId) return;
     const r = ref(db, `rooms/${roomId}`);
@@ -234,16 +240,22 @@ export default function MarriageRummyOnline() {
     return () => unsub();
   }, [roomId]);
 
-  // navigation/creation
+  // Create / Join / Seat / Start
   function hostCreate() {
     const newRoom = createRoom(playersCount);
     const r = ref(db, `rooms`);
     const key = push(r).key;
     newRoom.id = key;
     if (meName.trim()) newRoom.players[0].name = meName.trim();
-    set(ref(db, `rooms/${key}`), newRoom);
-    setRoomId(key);
-    setMeSeat(0);
+
+    set(ref(db, `rooms/${key}`), newRoom)
+      .then(() => {
+        setRoomId(key);
+        setMeSeat(0);
+      })
+      .catch((err) => {
+        console.error("Create room failed:", err);
+      });
   }
   function joinRoom(id) {
     setRoomId(id);
@@ -261,12 +273,21 @@ export default function MarriageRummyOnline() {
     }
   }
 
-  // convenience
+  // ------------------------------
+  // Safe selectors & helpers for rendering
+  // ------------------------------
+  const players = Array.isArray(room?.players) ? room.players : [];
+  const currentIdx = Number.isInteger(room?.current) ? room.current : 0;
+  const currentP = players[currentIdx];
+
+  const stock = Array.isArray(room?.stock) ? room.stock : [];
+  const discard = Array.isArray(room?.discard) ? room.discard : [];
+
   function myPlayer() {
-    return room?.players[meSeat ?? -1];
+    return players[meSeat ?? -1];
   }
   function currentPlayer() {
-    return room?.players[room?.current ?? -1];
+    return currentP;
   }
   function toggleSelect(id) {
     setSelected((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
@@ -275,105 +296,101 @@ export default function MarriageRummyOnline() {
     if (room) update(ref(db, `rooms/${room.id}`), partial);
   }
 
-  // chips ledger
+  // Chips ledger helpers
   function transferChips(fromSeat, toSeat, amount, reason) {
     if (!room || !amount) return;
-    const players = room.players.slice();
-    players[fromSeat] = { ...players[fromSeat], chips: players[fromSeat].chips - amount };
-    players[toSeat] = { ...players[toSeat], chips: players[toSeat].chips + amount };
+    const nextPlayers = room.players.slice();
+    nextPlayers[fromSeat] = { ...nextPlayers[fromSeat], chips: nextPlayers[fromSeat].chips - amount };
+    nextPlayers[toSeat]   = { ...nextPlayers[toSeat],   chips: nextPlayers[toSeat].chips   + amount };
     const ledger = (room.ledger || []).slice();
     ledger.push({ from: fromSeat, to: toSeat, amount, reason });
-    dispatchAction({ players, ledger });
+    dispatchAction({ players: nextPlayers, ledger });
   }
 
-  // turn actions
+  // Turn actions
   function drawStock() {
-    if (!room || meSeat !== room.current || room.stock.length === 0) return;
-    const stock = room.stock.slice();
-    const cardId = stock.shift();
-    const players = room.players.slice();
-    const me = players[room.current];
-    players[room.current] = { ...me, hasPicked: true, hand: [...me.hand, cardId] };
-    dispatchAction({ stock, players, lastAction: `${players[room.current].name} drew from stock.` });
+    if (!room || meSeat !== currentIdx || stock.length === 0) return;
+    const nextStock = stock.slice();
+    const cardId = nextStock.shift();
+    const nextPlayers = players.slice();
+    const me = nextPlayers[currentIdx];
+    nextPlayers[currentIdx] = { ...me, hasPicked: true, hand: [...(me.hand || []), cardId] };
+    dispatchAction({ stock: nextStock, players: nextPlayers, lastAction: `${me.name} drew from stock.` });
   }
   function takeDiscard() {
-    if (!room || meSeat !== room.current || room.discard.length === 0) return;
-    const discard = room.discard.slice();
-    const cardId = discard.pop();
-    const players = room.players.slice();
-    const me = players[room.current];
-    players[room.current] = { ...me, hasPicked: true, hand: [...me.hand, cardId] };
-    dispatchAction({
-      discard,
-      players,
-      lastAction: `${players[room.current].name} took the discard.`,
-    });
+    if (!room || meSeat !== currentIdx || discard.length === 0) return;
+    const nextDiscard = discard.slice();
+    const cardId = nextDiscard.pop();
+    const nextPlayers = players.slice();
+    const me = nextPlayers[currentIdx];
+    nextPlayers[currentIdx] = { ...me, hasPicked: true, hand: [...(me.hand || []), cardId] };
+    dispatchAction({ discard: nextDiscard, players: nextPlayers, lastAction: `${me.name} took the discard.` });
   }
 
-  // threshold: count PURE_RUN + TUNNELA only
+  // Qualification
   function canQualify(melds) {
     const pureCount = melds.filter((m) => m.type === "PURE_RUN" || m.type === "TUNNELA").length;
     return pureCount >= 3;
   }
 
-  // laying melds (table phase)
+  // Lay melds
   function layPure(type) {
-    if (!room || meSeat !== room.current) return;
+    if (!room || meSeat !== currentIdx) return;
     const me = myPlayer();
     if (!me) return;
     if (selected.length < 3) return;
 
     const meld = { id: `m-${Math.random()}`, type, cards: [...selected] };
-    const players = room.players.slice();
-    const meIdx = room.current;
-    const hand = me.hand.filter((id) => !selected.includes(id));
-    const melds = [...me.melds, meld];
+    const nextPlayers = players.slice();
+    const meIdx = currentIdx;
+    const hand = (me.hand || []).filter((id) => !selected.includes(id));
+    const melds = [...(me.melds || []), meld];
     const qualifies = me.qualifies || canQualify(melds);
-    players[meIdx] = { ...me, hand, melds, qualifies };
+    nextPlayers[meIdx] = { ...me, hand, melds, qualifies };
     setSelected([]);
-    dispatchAction({ players, lastAction: `${me.name} laid a ${type.replace("_", " ").toLowerCase()}.` });
+    dispatchAction({ players: nextPlayers, lastAction: `${me.name} laid a ${type.replace("_", " ").toLowerCase()}.` });
   }
 
-  // lay set with/without wilds (also used in POST_LAYOFF)
   function layImpureSet(minLen) {
     if (!room) return;
-    const turnSeat = room.phase === "POST_LAYOFF" ? room.postLayIndex : room.current;
+    const turnSeat = room.phase === "POST_LAYOFF" ? room.postLayIndex : currentIdx;
     if (meSeat !== turnSeat) return;
-    const me = room.players[turnSeat];
+    const me = players[turnSeat];
+    if (!me) return;
 
     const hidden = room.deck[room.hiddenJokerId];
     const required = Math.max(3, minLen);
 
     if (me.qualifies) {
-      // wild‑aware set (qualified)
+      // Wild‑aware sets allowed
       if (selected.length < required) return;
       const cards = selected.map((id) => room.deck[id]);
       if (!validateSetWithWilds(cards, hidden)) return;
       const meld = { id: `m-${Math.random()}`, type: "SET", cards: [...selected] };
-      const players = room.players.slice();
-      const hand = me.hand.filter((id) => !selected.includes(id));
-      const melds = [...me.melds, meld];
-      players[turnSeat] = { ...me, hand, melds };
+      const nextPlayers = players.slice();
+      const hand = (me.hand || []).filter((id) => !selected.includes(id));
+      const melds = [...(me.melds || []), meld];
+      nextPlayers[turnSeat] = { ...me, hand, melds };
       setSelected([]);
-      dispatchAction({ players, lastAction: `${me.name} laid a set (wild‑aware).` });
+      dispatchAction({ players: nextPlayers, lastAction: `${me.name} laid a set (wild‑aware).` });
     } else {
-      // strict same‑rank set of 4+ (not qualified)
+      // Not qualified: strict same‑rank sets of 4+
       const strictMin = Math.max(4, minLen);
       if (selected.length < strictMin) return;
       const r = room.deck[selected[0]].rank;
       if (!selected.every((id) => room.deck[id].rank === r)) return;
       const meld = { id: `m-${Math.random()}`, type: "SET", cards: [...selected] };
-      const players = room.players.slice();
-      const hand = me.hand.filter((id) => !selected.includes(id));
-      const melds = [...me.melds, meld];
-      players[turnSeat] = { ...me, hand, melds };
+      const nextPlayers = players.slice();
+      const hand = (me.hand || []).filter((id) => !selected.includes(id));
+      const melds = [...(me.melds || []), meld];
+      nextPlayers[turnSeat] = { ...me, hand, melds };
       setSelected([]);
-      dispatchAction({ players, lastAction: `${me.name} laid a set.` });
+      dispatchAction({ players: nextPlayers, lastAction: `${me.name} laid a set.` });
     }
   }
 
   function layTunnela() {
-    if (!room || meSeat !== room.current) return;
+    if (!room || meSeat !== currentIdx) return;
     const me = myPlayer();
     if (!me) return;
     if (selected.length !== 3) return;
@@ -383,35 +400,35 @@ export default function MarriageRummyOnline() {
     if (!(a && b && c && same(a, b) && same(b, c))) return;
 
     const meld = { id: `m-${Math.random()}`, type: "TUNNELA", cards: [...selected] };
-    const players = room.players.slice();
-    const meIdx = room.current;
-    const hand = me.hand.filter((id) => !selected.includes(id));
-    const melds = [...me.melds, meld];
+    const nextPlayers = players.slice();
+    const meIdx = currentIdx;
+    const hand = (me.hand || []).filter((id) => !selected.includes(id));
+    const melds = [...(me.melds || []), meld];
     const qualifies = me.qualifies || canQualify(melds);
     let updated = { ...me, hand, melds, qualifies };
 
-    // early tunnela bonus: before first pickup
+    // Early tunnela bonus
     if (!me.hasPicked && !me.earlyTunnelaAwarded) {
       updated = { ...updated, earlyTunnelaAwarded: true };
-      for (const p of players) {
+      for (const p of nextPlayers) {
         if (p.seat !== meIdx) transferChips(p.seat, meIdx, 10, "Early Tunnela (before first pickup)");
       }
     }
-    players[meIdx] = updated;
+    nextPlayers[meIdx] = updated;
     setSelected([]);
-    dispatchAction({ players, lastAction: `${me.name} laid a tunnela.` });
+    dispatchAction({ players: nextPlayers, lastAction: `${me.name} laid a tunnela.` });
   }
 
-  // discard (with wild‑aware declare validation)
-  function discard(cardId) {
-    if (!room || meSeat !== room.current) return;
-    const players = room.players.slice();
-    const p = players[room.current];
-    if (!p.hand.includes(cardId)) return;
+  // Discard (with wild‑aware declare validation)
+  function discardCard(cardId) {
+    if (!room || meSeat !== currentIdx) return;
+    const nextPlayers = players.slice();
+    const p = nextPlayers[currentIdx];
+    if (!p || !(p.hand || []).includes(cardId)) return;
 
-    const newHand = p.hand.filter((id) => id !== cardId);
+    const newHand = (p.hand || []).filter((id) => id !== cardId);
 
-    // If this ends the hand and player has qualified, check declaration legality
+    // If end of hand and qualified, validate melds
     if (newHand.length === 0 && p.qualifies) {
       const hidden = room.deck[room.hiddenJokerId];
       const valid = validatePlayerDeclarationWildAware(p, room.deck, hidden);
@@ -421,33 +438,33 @@ export default function MarriageRummyOnline() {
       }
     }
 
-    players[room.current] = { ...p, hand: newHand };
+    nextPlayers[currentIdx] = { ...p, hand: newHand };
     const lastAction = `${p.name} discarded.`;
 
     if (newHand.length === 0) {
-      startPostDeclare(room.current, players, lastAction);
+      startPostDeclare(currentIdx, nextPlayers, lastAction);
     } else {
-      dispatchAction({ players, discard: [...room.discard, cardId], lastAction });
+      dispatchAction({ players: nextPlayers, discard: [...discard, cardId], lastAction });
     }
   }
 
   function endTurn() {
-    if (room) dispatchAction({ current: (room.current + 1) % room.players.length });
+    if (room) dispatchAction({ current: (currentIdx + 1) % players.length });
   }
   function peekJoker() {
     if (!room) return;
     const me = myPlayer();
     if (!me || !me.qualifies || me.hasPeeked) return;
-    const players = room.players.slice();
-    players[me.seat] = { ...me, hasPeeked: true };
-    dispatchAction({ players, lastAction: `${me.name} peeked the hidden joker.` });
+    const nextPlayers = players.slice();
+    nextPlayers[me.seat] = { ...me, hasPeeked: true };
+    dispatchAction({ players: nextPlayers, lastAction: `${me.name} peeked the hidden joker.` });
   }
 
-  // post‑declare flow
-  function startPostDeclare(winnerSeat, players, lastAction) {
+  // Post‑declare flow
+  function startPostDeclare(winnerSeat, nextPlayers, lastAction) {
     const nextSeat = nextNonWinnerSeat(winnerSeat, room.options.playersCount);
     dispatchAction({
-      players,
+      players: nextPlayers,
       winnerSeat,
       postLayIndex: nextSeat,
       phase: "POST_LAYOFF",
@@ -455,7 +472,7 @@ export default function MarriageRummyOnline() {
     });
   }
   function nextNonWinnerSeat(winnerSeat, n, from) {
-    let s = typeof from === "number" ? from : winnerSeat;
+    let s = Number.isInteger(from) ? from : winnerSeat;
     do {
       s = (s + 1) % n;
     } while (s === winnerSeat);
@@ -479,7 +496,6 @@ export default function MarriageRummyOnline() {
     return sum;
   }
   function analyseHoldings(cards, hidden) {
-    // Count joker rank (any suit), and lower/upper/A of hidden suit.
     const suit = hidden.suit;
     const jokerRank = hidden.rank;
     const lowerRank = RANKS[(rankIndex(jokerRank) - 1 + RANKS.length) % RANKS.length];
@@ -497,7 +513,7 @@ export default function MarriageRummyOnline() {
     const U = count[`${suit}-${upperRank}`] || 0;
     const marriages = Math.min(L, J, U);
 
-    // remove the ones used in marriages from singletons
+    // Remove sets used in marriages from singles
     const singlesDetail = [];
     for (const k in count) singlesDetail.push(...Array(count[k]).fill(k));
     const removeOne = (key) => {
@@ -522,30 +538,28 @@ export default function MarriageRummyOnline() {
   function performSettlement() {
     if (!room) return;
     const hidden = room.deck[room.hiddenJokerId];
-    const players = room.players.slice();
+    const nextPlayers = players.slice();
     const winner = room.winnerSeat;
 
-    // 2b) Points -> chips to winner
-    for (const p of players) {
+    // Points -> chips to winner
+    for (const p of nextPlayers) {
       if (p.seat === winner) continue;
-      const points = pointsInHand(p.hand.map((id) => room.deck[id]), hidden);
+      const points = pointsInHand((p.hand || []).map((id) => room.deck[id]), hidden);
       const rounded = roundToNearest10(points);
       let chips = 0;
       if (rounded >= 100) chips = 25;
       else chips = (rounded / 10) * 2;
-      if (chips > 0)
-        transferChips(p.seat, winner, chips, `Points ${points} -> ${rounded} (to winner)`);
+      if (chips > 0) transferChips(p.seat, winner, chips, `Points ${points} -> ${rounded} (to winner)`);
     }
 
-    // 2c) Pairwise wild/value bonuses on UNMELDED holdings
-    const holdings = players.map((p) => analyseHoldings(p.hand.map((id) => room.deck[id]), hidden));
-    for (let i = 0; i < players.length; i++) {
-      for (let j = 0; j < players.length; j++) {
+    // Pairwise wild/value bonuses on UNMELDED holdings
+    const holdings = nextPlayers.map((p) => analyseHoldings((p.hand || []).map((id) => room.deck[id]), hidden));
+    for (let i = 0; i < nextPlayers.length; i++) {
+      for (let j = 0; j < nextPlayers.length; j++) {
         if (i === j) continue;
         const h = holdings[j]; // j receives from i based on j's holdings
         const amount = h.singletons * 5 + h.marriages * 25;
-        if (amount > 0)
-          transferChips(i, j, amount, `Wild/Value bonuses (${h.singletons}×5 + ${h.marriages}×25)`);
+        if (amount > 0) transferChips(i, j, amount, `Wild/Value bonuses (${h.singletons}×5 + ${h.marriages}×25)`);
       }
     }
 
@@ -556,7 +570,7 @@ export default function MarriageRummyOnline() {
   const btn = "px-3 py-3 rounded-xl text-white text-sm active:scale-[.98]";
 
   // ------------------------------
-  // Views
+  // Early loading/guard states
   // ------------------------------
   if (!roomId) {
     return (
@@ -570,7 +584,7 @@ export default function MarriageRummyOnline() {
             onChange={(e) => setMeName(e.target.value)}
             placeholder="Enter name"
           />
-        <div className="grid grid-cols-2 gap-2 mt-2">
+          <div className="grid grid-cols-2 gap-2 mt-2">
             <div className="p-3 rounded-xl bg-gray-50 border">
               <div className="text-xs text-gray-500 mb-1">Create room</div>
               <div className="flex items-center gap-2">
@@ -599,7 +613,14 @@ export default function MarriageRummyOnline() {
   }
 
   if (!room) return <div className="p-4 max-w-md mx-auto">Connecting to room…</div>;
+  if (!Array.isArray(room.players)) return <div className="p-4 max-w-md mx-auto">Preparing table…</div>;
+  if (room.phase === "PLAY" && (!Array.isArray(room.stock) || !Array.isArray(room.discard) || !players[currentIdx])) {
+    return <div className="p-4 max-w-md mx-auto">Setting the deck…</div>;
+  }
 
+  // ------------------------------
+  // Main Views
+  // ------------------------------
   return (
     <div className="p-3 max-w-6xl mx-auto">
       {/* Header */}
@@ -608,9 +629,7 @@ export default function MarriageRummyOnline() {
           <div className="text-xs text-gray-500">Room</div>
           <div className="font-semibold break-all">{room.id}</div>
         </div>
-        <div className="text-right text-xs text-gray-500">
-          Players: {room.options.playersCount}
-        </div>
+        <div className="text-right text-xs text-gray-500">Players: {room.options.playersCount}</div>
       </div>
 
       {/* Lobby */}
@@ -619,7 +638,7 @@ export default function MarriageRummyOnline() {
           <div className="p-3 bg-white rounded-2xl shadow">
             <div className="font-semibold mb-2">Seats</div>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {room.players.map((p) => (
+              {players.map((p) => (
                 <button
                   key={p.seat}
                   onClick={() => takeSeat(p.seat)}
@@ -632,15 +651,13 @@ export default function MarriageRummyOnline() {
                 </button>
               ))}
             </div>
-            <div className="mt-3 text-xs text-gray-500">
-              Tap a seat to set your name there.
-            </div>
+            <div className="mt-3 text-xs text-gray-500">Tap a seat to set your name there.</div>
           </div>
           <div className="p-3 bg-white rounded-2xl shadow">
             <div className="font-semibold mb-2">Hidden Joker</div>
             <div className="text-sm text-gray-600">
-              A random card has been set as the hidden joker. You can <b>peek</b>{" "}
-              it only after laying <b>3 pure melds</b> (pure runs or tunnela).
+              A random card has been set as the hidden joker. You can <b>peek</b> it only after laying{" "}
+              <b>3 pure melds</b> (pure runs or tunnela).
             </div>
             <div className="mt-3">
               {meSeat === 0 ? (
@@ -661,11 +678,11 @@ export default function MarriageRummyOnline() {
           <div className="p-3 rounded-2xl bg-white shadow flex items-center justify-between">
             <div>
               <div className="text-xs text-gray-500">Turn</div>
-              <div className="font-semibold">{room.players[room.current].name}</div>
+              <div className="font-semibold">{currentP?.name ?? "Player"}</div>
             </div>
             <div className="flex items-center gap-3 text-sm">
-              <div>Stock <b>{room.stock.length}</b></div>
-              <div>Discard <b>{room.discard.length}</b></div>
+              <div>Stock <b>{stock.length}</b></div>
+              <div>Discard <b>{discard.length}</b></div>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-gray-500">Hidden Joker</span>
                 {myPlayer()?.hasPeeked ? (
@@ -685,12 +702,12 @@ export default function MarriageRummyOnline() {
           <div className="p-3 bg-white rounded-2xl shadow">
             <div className="flex items-center justify-between mb-2">
               <div className="font-semibold">
-                {myPlayer()?.name}'s Hand ({myPlayer()?.hand.length})
+                {(myPlayer()?.name ?? "You")}'s Hand ({(myPlayer()?.hand ?? []).length})
               </div>
               <div className="text-xs text-gray-500">Tap cards, then Lay</div>
             </div>
             <div className="flex flex-wrap">
-              {myPlayer()?.hand.map((id) => (
+              {(myPlayer()?.hand ?? []).map((id) => (
                 <Card
                   key={id}
                   card={room.deck[id]}
@@ -700,13 +717,13 @@ export default function MarriageRummyOnline() {
               ))}
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
-              <button onClick={() => layPure("PURE_RUN")} className={`${btn} bg-sky-600`}>
+              <button onClick={() => selected.length >= 3 && layPure("PURE_RUN")} className={`${btn} bg-sky-600`}>
                 Lay Pure Run
               </button>
-              <button onClick={() => layPure("PURE_SET")} className={`${btn} bg-indigo-600`}>
+              <button onClick={() => selected.length >= 3 && layPure("PURE_SET")} className={`${btn} bg-indigo-600`}>
                 Lay Pure Set
               </button>
-              <button onClick={layTunnela} className={`${btn} bg-rose-700`}>
+              <button onClick={() => layTunnela()} className={`${btn} bg-rose-700`}>
                 Lay Tunnela (3 identical)
               </button>
               <button onClick={() => layImpureSet(3)} className={`${btn} bg-purple-600`}>
@@ -721,32 +738,48 @@ export default function MarriageRummyOnline() {
             </div>
           </div>
 
-          {/* Table & Chips */}
+          {/* Discard */}
+          <div className="p-3 bg-white rounded-2xl shadow">
+            <div className="font-semibold mb-2">Discard (top last)</div>
+            <div className="flex flex-wrap">{discard.map((id) => <Card key={id} card={room.deck[id]} />)}</div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {(myPlayer()?.hand ?? []).map((id) => (
+                <button
+                  key={id}
+                  onClick={() => discardCard(id)}
+                  className="px-2 py-1 text-xs bg-amber-100 hover:bg-amber-200 rounded border"
+                >
+                  Discard {room.deck[id].rank}{room.deck[id].suit}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Controls */}
+          <div className="p-3 bg-white rounded-2xl shadow">
+            <div className="font-semibold mb-2">Controls</div>
+            <div className="flex flex-wrap gap-2">
+              <button onClick={endTurn} className={`${btn} bg-gray-900`}>End Turn</button>
+              <button onClick={() => discardCard((myPlayer()?.hand ?? [])[0])} className={`${btn} bg-emerald-700`}>
+                Quick Declare (discard first card)
+              </button>
+            </div>
+            <div className="text-xs text-gray-500 mt-3">{room.lastAction}</div>
+          </div>
+
+          {/* Table */}
           <div className="p-3 bg-white rounded-2xl shadow">
             <div className="font-semibold mb-2">Table</div>
             <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
-              {room.players.map((p, idx) => (
-                <div
-                  key={p.id}
-                  className={`p-3 rounded-xl border ${
-                    idx === room.current ? "border-blue-600" : "border-gray-200"
-                  }`}
-                >
+              {players.map((p, idx) => (
+                <div key={p.id} className={`p-3 rounded-xl border ${idx === currentIdx ? "border-blue-600" : "border-gray-200"}`}>
                   <div className="flex items-center justify-between">
                     <div className="font-medium truncate">{p.name}</div>
-                    <div className="text-[10px] text-gray-500">
-                      {idx === room.current ? "Playing" : ""}
-                    </div>
+                    <div className="text-[10px] text-gray-500">{idx === currentIdx ? "Playing" : ""}</div>
                   </div>
-                  <div className="mt-1 text-xs">
-                    Melds: {p.melds.length} | Hand: {p.hand.length}
-                  </div>
-                  <div className="mt-1 text-xs">
-                    Qualifies: {p.qualifies ? "Yes" : "No"} | Peeked: {p.hasPeeked ? "Yes" : "No"}
-                  </div>
-                  <div className="mt-1 text-xs">
-                    Chips: <b>{p.chips}</b>
-                  </div>
+                  <div className="mt-1 text-xs">Melds: {(p.melds ?? []).length} | Hand: {(p.hand ?? []).length}</div>
+                  <div className="mt-1 text-xs">Qualifies: {p.qualifies ? "Yes" : "No"} | Peeked: {p.hasPeeked ? "Yes" : "No"}</div>
+                  <div className="mt-1 text-xs">Chips: <b>{p.chips}</b></div>
                 </div>
               ))}
             </div>
@@ -760,43 +793,33 @@ export default function MarriageRummyOnline() {
           <div className="p-3 rounded-2xl bg-white shadow flex items-center justify-between">
             <div>
               <div className="text-xs text-gray-500">
-                Post‑Declare Layoff — Winner: {room.players[room.winnerSeat].name}
+                Post‑Declare Layoff — Winner: {players[room.winnerSeat]?.name ?? "Winner"}
               </div>
-              <div className="font-semibold">
-                Now laying off: {room.players[room.postLayIndex].name}
-              </div>
+              <div className="font-semibold">Now laying off: {players[room.postLayIndex]?.name ?? "Player"}</div>
             </div>
           </div>
+
           <div className="p-3 bg-white rounded-2xl shadow">
             <div className="flex items-center justify-between mb-2">
               <div className="font-semibold">
-                {room.players[room.postLayIndex].name}'s Hand (
-                {room.players[room.postLayIndex].hand.length})
+                {(players[room.postLayIndex]?.name ?? "Player")}'s Hand ({(players[room.postLayIndex]?.hand ?? []).length})
               </div>
               <div className="text-xs text-gray-500">Tap cards, then Lay Set</div>
             </div>
             <div className="flex flex-wrap">
-              {room.players[room.postLayIndex].hand.map((id) => (
-                <Card
-                  key={id}
-                  card={room.deck[id]}
-                  selected={selected.includes(id)}
-                  onClick={() => toggleSelect(id)}
-                />
+              {(players[room.postLayIndex]?.hand ?? []).map((id) => (
+                <Card key={id} card={room.deck[id]} selected={selected.includes(id)} onClick={() => toggleSelect(id)} />
               ))}
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
               <button
-                onClick={() => layImpureSet(room.players[room.postLayIndex].qualifies ? 3 : 4)}
+                onClick={() => layImpureSet(players[room.postLayIndex]?.qualifies ? 3 : 4)}
                 className={`${btn} bg-purple-600`}
               >
-                Lay Set (min {room.players[room.postLayIndex].qualifies ? 3 : 4})
+                Lay Set (min {players[room.postLayIndex]?.qualifies ? 3 : 4})
               </button>
               <button
-                onClick={() => {
-                  setSelected([]);
-                  doneLayoff();
-                }}
+                onClick={() => { setSelected([]); doneLayoff(); }}
                 className="px-3 py-3 rounded-xl bg-emerald-700 text-white text-sm"
               >
                 I'm Done
@@ -808,17 +831,13 @@ export default function MarriageRummyOnline() {
           <div className="p-3 bg-white rounded-2xl shadow">
             <div className="font-semibold mb-2">Table</div>
             <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
-              {room.players.map((p) => (
+              {players.map((p) => (
                 <div key={p.id} className={`p-3 rounded-xl border border-gray-200`}>
                   <div className="flex items-center justify-between">
                     <div className="font-medium truncate">{p.name}</div>
                   </div>
-                  <div className="mt-1 text-xs">
-                    Melds: {p.melds.length} | Hand: {p.hand.length}
-                  </div>
-                  <div className="mt-1 text-xs">
-                    Chips: <b>{p.chips}</b>
-                  </div>
+                  <div className="mt-1 text-xs">Melds: {(p.melds ?? []).length} | Hand: {(p.hand ?? []).length}</div>
+                  <div className="mt-1 text-xs">Chips: <b>{p.chips}</b></div>
                 </div>
               ))}
             </div>
@@ -832,7 +851,7 @@ export default function MarriageRummyOnline() {
           <div className="p-3 bg-white rounded-2xl shadow">
             <div className="font-semibold mb-2">Round Finished</div>
             <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
-              {room.players.map((p) => (
+              {players.map((p) => (
                 <div key={p.id} className="p-3 rounded-xl border border-gray-200">
                   <div className="font-medium">{p.name}</div>
                   <div className="text-sm">Chips: <b>{p.chips}</b></div>
@@ -840,13 +859,13 @@ export default function MarriageRummyOnline() {
               ))}
             </div>
           </div>
-          {room.ledger && room.ledger.length > 0 && (
+          {(room.ledger || []).length > 0 && (
             <div className="p-3 bg-white rounded-2xl shadow">
               <div className="font-semibold mb-2">Chip Ledger</div>
               <ul className="text-xs list-disc pl-5">
-                {room.ledger.map((t, i) => (
+                {(room.ledger || []).map((t, i) => (
                   <li key={i} className="mb-1">
-                    <b>{room.players[t.from].name}</b> → <b>{room.players[t.to].name}</b>: {t.amount} ({t.reason})
+                    <b>{players[t.from]?.name ?? `Seat ${t.from+1}`}</b> → <b>{players[t.to]?.name ?? `Seat ${t.to+1}`}</b>: {t.amount} ({t.reason})
                   </li>
                 ))}
               </ul>
@@ -854,10 +873,6 @@ export default function MarriageRummyOnline() {
           )}
         </div>
       )}
-
-      <div className="mt-6 p-4 bg-white rounded-2xl shadow text-xs text-gray-600">
-        <b>Tip:</b> Share the room ID above with your family, or add a custom domain in Vercel for an easy link.
-      </div>
     </div>
   );
 }
