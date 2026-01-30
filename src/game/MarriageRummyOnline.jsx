@@ -5,52 +5,28 @@ import React, { useEffect, useState } from "react";
 // Firebase (Realtime Database)
 // ------------------------------
 import { initializeApp, getApps, getApp } from "firebase/app";
-import { getDatabase, ref, onValue, set, update, push } from "firebase/database";
+import { getDatabase } from "firebase/database";
 
-/**
- * Prefer build-time env (import.meta.env.*) and fall back to a runtime
- * window.__FIREBASE_CONFIG__ (in case you still keep the HTML bridge).
- */
+// prefer build-time Vite env; only fall back to window if truly missing
+const env = import.meta.env || {};
 const FIREBASE_CONFIG = {
-  apiKey:
-    import.meta?.env?.VITE_FIREBASE_API_KEY ||
-    (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.apiKey : undefined),
-  authDomain:
-    import.meta?.env?.VITE_FIREBASE_AUTH_DOMAIN ||
-    (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.authDomain : undefined),
-  databaseURL:
-    import.meta?.env?.VITE_FIREBASE_DATABASE_URL ||
-    (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.databaseURL : undefined),
-  projectId:
-    import.meta?.env?.VITE_FIREBASE_PROJECT_ID ||
-    (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.projectId : undefined),
-  storageBucket:
-    import.meta?.env?.VITE_FIREBASE_STORAGE_BUCKET ||
-    (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.storageBucket : undefined),
-  messagingSenderId:
-    import.meta?.env?.VITE_FIREBASE_MESSAGING_SENDER_ID ||
-    (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.messagingSenderId : undefined),
-  appId:
-    import.meta?.env?.VITE_FIREBASE_APP_ID ||
-    (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.appId : undefined),
-  // Optional
-  measurementId:
-    import.meta?.env?.VITE_FIREBASE_MEASUREMENT_ID ||
-    (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.measurementId : undefined),
+  apiKey:            env.VITE_FIREBASE_API_KEY        || (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.apiKey : undefined),
+  authDomain:        env.VITE_FIREBASE_AUTH_DOMAIN     || (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.authDomain : undefined),
+  databaseURL:       env.VITE_FIREBASE_DATABASE_URL    || (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.databaseURL : undefined),
+  projectId:         env.VITE_FIREBASE_PROJECT_ID      || (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.projectId : undefined),
+  storageBucket:     env.VITE_FIREBASE_STORAGE_BUCKET  || (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.storageBucket : undefined),
+  messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.messagingSenderId : undefined),
+  appId:             env.VITE_FIREBASE_APP_ID          || (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.appId : undefined),
+  measurementId:     env.VITE_FIREBASE_MEASUREMENT_ID  || (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.measurementId : undefined),
 };
 
-// Helpful guard (will show once if something is missing)
-if (!FIREBASE_CONFIG?.databaseURL || !FIREBASE_CONFIG?.projectId) {
-  // This will appear in the browser console and helps diagnose env var issues quickly
-  console.error(
-    "[Firebase] Missing databaseURL or projectId. " +
-      "Check Vercel env vars (Project → Settings → Environment Variables). " +
-      "You need VITE_FIREBASE_DATABASE_URL and VITE_FIREBASE_PROJECT_ID set for this project."
-  );
+// one-time guard
+if (!FIREBASE_CONFIG.databaseURL || !FIREBASE_CONFIG.projectId) {
+  console.error("[Firebase] Missing databaseURL or projectId. Check Vercel env vars for this project.");
 }
 
 const app = getApps().length ? getApp() : initializeApp(FIREBASE_CONFIG);
-const db = getDatabase(app);
+const db  = getDatabase(app);
 
 // ------------------------------
 // Helpers, constants & rules
