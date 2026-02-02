@@ -5,7 +5,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 // Firebase (Realtime Database)
 // ------------------------------
 import { initializeApp, getApps, getApp } from "firebase/app";
-import { getDatabase, ref, set, update, push, onValue, get, child } from "firebase/database";
+import { getDatabase, ref, set, update, onValue, get, child } from "firebase/database";
 
 /**
  * Prefer build-time Vite env (import.meta.env). Fall back to window.__FIREBASE_CONFIG__
@@ -292,9 +292,10 @@ export default function MarriageRummyOnline(){
   const [room, setRoom] = useState(null);
   const [stage, setStage] = useState([]);                 // staging area
   const [dragInfo, setDragInfo] = useState(null);         // { id, from:'hand'|'stage', index }
+  const [toast, setToast] = useState("");                 // small UX hint on save
   const handRef = useRef(null);
 
-  // Load saved name on first render (so Save works pre-seat and Sit here picks it up)
+  // Load saved name on first render
   useEffect(() => {
     try {
       const saved = localStorage.getItem("mr_name");
@@ -331,7 +332,7 @@ export default function MarriageRummyOnline(){
   async function claimSeat(seat){
     if (!room) return;
     const name = (meName || "").trim();
-    if (!name) return alert("Please set your name first");
+    if (!name) { setToast("Enter a name first"); return; }
 
     const nextPlayers = playersN.slice();
     // Always fresh player with 250 chips
@@ -339,17 +340,30 @@ export default function MarriageRummyOnline(){
 
     await update(ref(db, `rooms/${ROOM_ID}`), { players: nextPlayers });
     setMeSeat(seat);
+    flashToast("Seated ✔");
   }
 
   async function saveName(){
     const name = (meName || "").trim();
+
     // persist locally (works even when not seated yet)
     try { localStorage.setItem("mr_name", name); } catch (_) {}
 
-    if (!room || meSeat == null) return; // will be applied when you "Sit here"
-    const nextPlayers = playersN.slice();
-    nextPlayers[meSeat] = { ...nextPlayers[meSeat], name: name || `Player ${meSeat+1}` };
-    await update(ref(db, `rooms/${ROOM_ID}`), { players: nextPlayers });
+    if (!room) { flashToast("Saved locally"); return; }
+
+    // If not seated, we just persist locally (it will apply on Sit here)
+    if (meSeat == null) { flashToast("Saved. Sit down to apply"); return; }
+
+    // ✅ Targeted partial update (robust)
+    try {
+      await update(ref(db, `rooms/${ROOM_ID}/players/${meSeat}`), {
+        name: name || `Player ${meSeat+1}`
+      });
+      flashToast("Saved ✔");
+    } catch (err) {
+      console.error("[Save name] FAILED", err);
+      flashToast("Save failed");
+    }
   }
 
   async function leaveTable(){
@@ -367,6 +381,13 @@ export default function MarriageRummyOnline(){
     });
     setStage([]);
     setMeSeat(null);
+    flashToast("Left table");
+  }
+
+  function flashToast(msg){
+    setToast(msg);
+    window.clearTimeout((flashToast._t));
+    flashToast._t = window.setTimeout(()=>setToast(""), 1400);
   }
 
   // Turn actions
@@ -669,11 +690,14 @@ export default function MarriageRummyOnline(){
 
   // ------------------------------
   // MAIN RENDER (Real Table, 5 seats)
-// ------------------------------
+  // ------------------------------
   return (
     <div style={ui.viewport}>
-      {/* Name prompt (always available) */}
-      <div style={ui.namePanel}>
+      {/* Name prompt (form to support Enter) */}
+      <form
+        style={ui.namePanel}
+        onSubmit={(e)=>{ e.preventDefault(); saveName(); }}
+      >
         <span style={{fontWeight:700}}>Your name</span>
         <input
           style={ui.input}
@@ -682,14 +706,17 @@ export default function MarriageRummyOnline(){
           onChange={e=>setMeName(e.target.value)}
         />
         <button
-          onClick={saveName}
+          type="submit"
           disabled={!meName.trim()}
           style={{...ui.btn, ...(meName.trim() ? ui.btnGreen : ui.btnGray)}}
           title={meName.trim() ? "Save name" : "Enter a name first"}
         >
           Save
         </button>
-      </div>
+        {toast && (
+          <span style={{marginLeft:8, fontSize:12, color:"#0f5132"}}>{toast}</span>
+        )}
+      </form>
 
       <div style={ui.shell}>
         {/* Felt table */}
