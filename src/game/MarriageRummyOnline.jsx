@@ -1,11 +1,11 @@
 // src/game/MarriageRummyOnline.jsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 // ------------------------------
 // Firebase (Realtime Database)
 // ------------------------------
 import { initializeApp, getApps, getApp } from "firebase/app";
-import { getDatabase, ref, set, update, push, onValue } from "firebase/database";
+import { getDatabase, ref, set, update, push, onValue, get, child } from "firebase/database";
 
 /**
  * Prefer build-time Vite env (import.meta.env). Fall back to window.__FIREBASE_CONFIG__
@@ -35,47 +35,70 @@ const app = getApps().length ? getApp() : initializeApp(FIREBASE_CONFIG);
 const db  = getDatabase(app);
 
 // ------------------------------
-// Tiny design system (inline styles)
+// Tiny design system + Table styles
 // ------------------------------
+const FELT = "#135f39";
+const FELT_DARK = "#0e4c2e";
 const ui = {
-  page:    { minHeight: "100vh", background: "#F5F7FB", color: "#111", fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif" },
-  shell:   { maxWidth: 1200, margin: "0 auto", padding: 16 },
-  h1:      { fontSize: 28, fontWeight: 800, marginBottom: 12 },
-  textXs:  { fontSize: 12, color: "#6B7280" },
-  textSm:  { fontSize: 14, color: "#374151" },
-  panel:   { background: "#FFF", borderRadius: 16, padding: 16, boxShadow: "0 8px 24px rgba(16,24,40,.06)", border: "1px solid #EEF2F7" },
-  card:    { background: "#FFF", borderRadius: 12, padding: 12, border: "1px solid #E5E7EB" },
-  row:     { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 },
-  grid:    { display: "grid", gap: 12 },
-  grid2:   { display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: 12 },
-  grid3:   { display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 12 },
-  input:   { border: "1px solid #D1D5DB", borderRadius: 10, padding: "8px 10px", width: "100%", outline: "none" },
-  number:  { border: "1px solid #D1D5DB", borderRadius: 10, padding: "8px 10px", width: 80, outline: "none" },
-  btn:     { border: "0", borderRadius: 10, padding: "10px 14px", fontWeight: 600, cursor: "pointer" },
-  btnDark: { background: "#111827", color: "#fff" },
-  btnBlue: { background: "#2563EB", color: "#fff" },
-  btnGreen:{ background: "#059669", color: "#fff" },
-  btnAmber:{ background: "#D97706", color: "#fff" },
-  btnGray: { background: "#E5E7EB", color: "#111827" },
-  subtle:  { fontSize: 12, color:"#6B7280", marginTop: 8 },
-  mono:    { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" },
+  viewport: { minHeight: "100vh", background: "radial-gradient(1000px 600px at 50% -100px, #196a42, #0c3d27)", color: "#0c1b12", fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif" },
+  shell:    { position: "relative", maxWidth: 1280, margin: "0 auto", padding: 16, minHeight: "100vh" },
 
-  pcardWrap: { display:"inline-flex", flexDirection:"column", alignItems:"center", marginRight:6, marginBottom:6 },
-  pcard:  { width: 56, height: 76, borderRadius: 10, background: "#fff", border: "1px solid #E5E7EB", boxShadow:"0 2px 8px rgba(16,24,40,.06)", display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column" },
-  pS: (isRed)=>({ fontSize: 18, lineHeight:"18px", color: isRed? "#DC2626" : "#111827" }),
-  pR: (isRed)=>({ fontSize: 10, lineHeight:"10px", color: isRed? "#DC2626" : "#111827" }),
-  pill:   { display:"inline-flex", alignItems:"center", padding:"2px 8px", borderRadius:999, background:"#EEF2FF", color:"#3730A3", border:"1px solid #C7D2FE", fontSize:12, marginRight:6, marginBottom:6 },
+  // Table surface
+  tableWrap:   { position: "relative", margin: "60px auto 220px", width: "100%", maxWidth: 1100, height: 520 },
+  tableSurface:{ position: "absolute", inset: 0, borderRadius: 500, background: `radial-gradient(1200px 600px at 50% 30%, ${FELT}, ${FELT_DARK})`, boxShadow: "0 60px 140px rgba(0,0,0,.45), inset 0 8px 20px rgba(255,255,255,.12), inset 0 -8px 24px rgba(0,0,0,.25)", border: "10px solid #3e2b18", outline: "1px solid rgba(255,255,255,.04)" },
+
+  // Seat plaques
+  seatPlaque:  { position:"absolute", minWidth: 220, padding: "10px 12px", borderRadius: 12, background: "rgba(255,255,255,.09)", backdropFilter: "blur(6px)", border: "1px solid rgba(255,255,255,.12)", color:"#eafff0" },
+  seatTitle:   { fontSize: 14, fontWeight: 700 },
+  seatMeta:    { fontSize: 12, opacity:.9, marginTop: 4 },
+
+  // Seat positions (approximate around oval)
+  topSeat:     { top:-36, left:"50%", transform:"translateX(-50%)" },
+  rightSeat:   { right:-10, top:"50%", transform:"translateY(-50%)" },
+  bottomSeat:  { bottom:-36, left:"50%", transform:"translateX(-50%)" },
+  leftSeat:    { left:-10, top:"50%", transform:"translateY(-50%)" },
+
+  // Meld belts near each seat
+  belt:        { display:"flex", flexWrap:"wrap", gap:8, marginTop:8 },
+
+  // Hand tray + staging
+  tray:        { position:"fixed", left:"50%", bottom: 16, transform:"translateX(-50%)", width:"min(1180px, 96vw)", background:"rgba(255,255,255,.96)", border:"1px solid #e6ece8", borderRadius:16, padding:12, boxShadow:"0 18px 80px rgba(0,0,0,.25)" },
+  trayTitleRow:{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, marginBottom:6 },
+  textXs:      { fontSize: 12, color:"#344e3e" },
+  actionsRow:  { display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" },
+  btn:         { border:"0", borderRadius:10, padding:"10px 14px", fontWeight:700, cursor:"pointer" },
+  btnDark:     { background:"#13251b", color:"#fff" },
+  btnBlue:     { background:"#2563EB", color:"#fff" },
+  btnGreen:    { background:"#059669", color:"#fff" },
+  btnAmber:    { background:"#D97706", color:"#fff" },
+  btnGray:     { background:"#E5E7EB", color:"#0f1f17" },
+
+  // Card visuals
+  cardWrap:    { display:"inline-flex", flexDirection:"column", alignItems:"center", marginRight:6, marginBottom:6 },
+  cardBox:     { width: 56, height: 76, borderRadius: 10, background:"#fff", border:"1px solid #dbe3dd", boxShadow:"0 2px 8px rgba(16,24,40,.10)", display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column" },
+  pS:(red)=>({ fontSize: 18, lineHeight:"18px", color:red? "#e11d48":"#0f172a" }),
+  pR:(red)=>({ fontSize: 10, lineHeight:"10px", color:red? "#e11d48":"#0f172a" }),
+  pill:       { display:"inline-flex", alignItems:"center", padding:"2px 8px", borderRadius:999, background:"#eef2ff", color:"#3730a3", border:"1px solid #c7d2fe", fontSize:12 },
+
+  // Name prompt
+  namePanel:  { position:"fixed", left:"50%", top: 28, transform:"translateX(-50%)", background:"rgba(255,255,255,.96)", border:"1px solid #e6ece8", borderRadius:14, padding:"10px 12px", boxShadow:"0 10px 40px rgba(0,0,0,.2)", display:"flex", alignItems:"center", gap:8 },
+  input:      { border:"1px solid #d1d5db", borderRadius:10, padding:"8px 10px", outline:"none" },
+  mono:       { fontFamily:"ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" }
 };
 
 // ------------------------------
 // Helpers, constants & rules
 // ------------------------------
-const SUITS = ["♠", "♥", "♦", "♣"];              // <— suit display order
-const RANKS = ["A","2","3","4","5","6","7","8","9","10","J","Q","K"]; // rank order
+const SUITS = ["♠", "♥", "♦", "♣"];                // suit display & sort order
+const RANKS = ["A","2","3","4","5","6","7","8","9","10","J","Q","K"];
 const rankIndex = (r) => RANKS.indexOf(r);
 const suitIndex = (s) => SUITS.indexOf(s);
 
-/** Default sort: by suit (♠ ♥ ♦ ♣), then by rank (A..K) */
+// Card slot metrics for pixel-accurate DnD
+const CARD_W = 56;
+const CARD_G = 6;
+const SLOT_W = CARD_W + CARD_G;
+
 function sortHandDefault(deck, handIds) {
   return [...handIds].sort((aId, bId) => {
     const a = deck[aId], b = deck[bId];
@@ -92,22 +115,14 @@ function shuffle(arr, seed){
   for(let i=a.length-1; i>0; i--){ const j = Math.floor(rnd()*(i+1)); [a[i],a[j]] = [a[j],a[i]]; }
   return a;
 }
-
 function generateDeck(n=3){
   const out = [];
-  for(let d=0; d<n; d++){
-    for(const suit of SUITS){
-      for(const rank of RANKS){
-        out.push({
-          id: `${d}-${suit}-${rank}-${Math.random().toString(36).slice(2,8)}`,
-          suit, rank
-        });
-      }
-    }
-  }
+  for(let d=0; d<n; d++)
+    for(const suit of SUITS)
+      for(const rank of RANKS)
+        out.push({ id:`${d}-${suit}-${rank}-${Math.random().toString(36).slice(2,8)}`, suit, rank });
   return out;
 }
-
 const isUpper=(c,h)=> c.suit===h.suit && c.rank===RANKS[(rankIndex(h.rank)+1)%RANKS.length];
 const isLower=(c,h)=> c.suit===h.suit && c.rank===RANKS[(rankIndex(h.rank)-1+RANKS.length)%RANKS.length];
 const isWild =(c,h)=> c.rank===h.rank || isUpper(c,h) || isLower(c,h);
@@ -200,17 +215,15 @@ function createRoom(playersCount){
     chips:250
   }));
 
-  // Deal
+  // deal 21 each
   let t=0; for(let i=0;i<playersCount*21;i++){ players[t].hand.push(stock[i]); t=(t+1)%playersCount; }
   const remaining = stock.slice(playersCount*21);
 
-  // 🔽 NEW: sort each player's hand by suit → rank
-  for (const p of players) {
-    p.hand = sortHandDefault(deck, p.hand);
-  }
+  // sort hands by suit -> rank
+  for (const p of players) p.hand = sortHandDefault(deck, p.hand);
 
   return {
-    id:"",
+    id:"global",
     options: { playersCount, requireThreePure:true, allowPureSets:false, useUpperLower:true },
     deck,
     stock: remaining,
@@ -226,55 +239,45 @@ function createRoom(playersCount){
   };
 }
 
+// Map logical seats to table positions (top/right/bottom/left)
+const seatPos = (seat) => {
+  switch ((seat % 4 + 4) % 4) {
+    case 0: return ui.topSeat;
+    case 1: return ui.rightSeat;
+    case 2: return ui.bottomSeat;
+    case 3: return ui.leftSeat;
+    default:return ui.topSeat;
+  }
+};
+
 // ------------------------------
 // Component
 // ------------------------------
 export default function MarriageRummyOnline(){
   const [meName, setMeName] = useState("");
   const [meSeat, setMeSeat] = useState(null);
-  const [roomId, setRoomId] = useState("");
   const [room, setRoom] = useState(null);
-  const [playersCount, setPlayersCount] = useState(3);
+  const [stage, setStage] = useState([]);                 // staging area
+  const [dragInfo, setDragInfo] = useState(null);         // { id, from:'hand'|'stage', index }
+  const handRef = useRef(null);
 
-  // Staging workspace
-  const [stage, setStage] = useState([]); // staged card IDs
+  // Always-live room ID
+  const ROOM_ID = "global";
 
-  // Drag state
-  const [dragInfo, setDragInfo] = useState(null); // {id, from:'hand'|'stage', index}
+  // bootstrap: create global room if missing
+  useEffect(() => {
+    (async () => {
+      const snap = await get(child(ref(db), `rooms/${ROOM_ID}`));
+      if (!snap.exists()) {
+        const newRoom = createRoom(4);
+        await set(ref(db, `rooms/${ROOM_ID}`), newRoom);
+      }
+      // subscribe
+      const unsub = onValue(ref(db, `rooms/${ROOM_ID}`), s => s.val() && setRoom(s.val()));
+      return () => unsub();
+    })();
+  }, []);
 
-  // Subscribe
-  useEffect(()=>{
-    if(!roomId) return;
-    const r = ref(db, `rooms/${roomId}`);
-    const unsub = onValue(r, snap => { const v = snap.val(); if (v) setRoom(v); });
-    return ()=>unsub();
-  },[roomId]);
-
-  // Create / Join / Seat / Start
-  function hostCreate(){
-    const safeCount = Math.min(5, Math.max(2, Number(playersCount) || 3));
-    const newRoom = createRoom(safeCount);
-    const r = ref(db, `rooms`);
-    const key = push(r).key;
-    newRoom.id = key;
-    if (meName.trim()) newRoom.players[0].name = meName.trim();
-
-    console.log("[Create] Writing /rooms/"+key, newRoom);
-    set(ref(db, `rooms/${key}`), newRoom)
-      .then(()=>{ console.log("[Create] OK /rooms/"+key); setRoomId(key); setMeSeat(0); })
-      .catch(err=> console.error("[Create] FAILED", err));
-  }
-  const joinRoom = (id)=> setRoomId(id);
-  function takeSeat(seat){
-    if(!room || room.phase!=="LOBBY") return;
-    update(ref(db, `rooms/${room.id}/players/${seat}`), {
-      name: meName.trim() || `Player ${seat+1}`
-    });
-    setMeSeat(seat);
-  }
-  const startGame = ()=> { if(room && meSeat===0) update(ref(db, `rooms/${room.id}`), { phase:"PLAY", lastAction:"Game started." }); };
-
-  // Normalised lists for safe render
   const playersN = asArray(room?.players);
   const stockN   = asArray(room?.stock);
   const discardN = asArray(room?.discard);
@@ -282,24 +285,33 @@ export default function MarriageRummyOnline(){
   const currentP   = playersN[currentIdx];
   const myP        = useMemo(()=> playersN[meSeat ?? -1], [playersN, meSeat]);
 
-  function dispatchAction(partial){ if(room) update(ref(db, `rooms/${room.id}`), partial); }
+  function dispatchAction(partial){ if(room) update(ref(db, `rooms/${ROOM_ID}`), partial); }
 
-  // Ledger
-  function transferChips(fromSeat,toSeat,amount,reason){
-    if(!room || !amount) return;
+  // sit / rename
+  async function claimSeat(seat){
+    if (!room) return;
+    const name = (meName || "").trim();
+    if (!name) return alert("Please set your name first");
+    const target = playersN[seat];
+    if (!target) return;
     const nextPlayers = playersN.slice();
-    nextPlayers[fromSeat] = { ...nextPlayers[fromSeat], chips: (nextPlayers[fromSeat].chips||0) - amount };
-    nextPlayers[toSeat]   = { ...nextPlayers[toSeat],   chips: (nextPlayers[toSeat].chips||0) + amount };
-    const ledger = asArray(room.ledger);
-    ledger.push({ from: fromSeat, to: toSeat, amount, reason });
-    dispatchAction({ players: nextPlayers, ledger });
+    nextPlayers[seat] = { ...target, name };
+    await update(ref(db, `rooms/${ROOM_ID}`), { players: nextPlayers });
+    setMeSeat(seat);
+  }
+  async function saveName(){
+    if (!room || meSeat==null) return;
+    const nextPlayers = playersN.slice();
+    nextPlayers[meSeat] = { ...nextPlayers[meSeat], name: (meName||"").trim() || `Player ${meSeat+1}` };
+    await update(ref(db, `rooms/${ROOM_ID}`), { players: nextPlayers });
   }
 
-  // Draw / Pickup
+  // Turn actions
   function drawStock(){
     if(!room || meSeat!==currentIdx || stockN.length===0) return;
     const nextStock = stockN.slice(); const cardId = nextStock.shift();
     const nextPlayers = playersN.slice(); const me = nextPlayers[currentIdx];
+    // append then (optionally) keep sorted? keep as-append to let player decide
     nextPlayers[currentIdx] = { ...me, hasPicked:true, hand:[...(me.hand||[]), cardId] };
     dispatchAction({ stock: nextStock, players: nextPlayers, lastAction: `${me.name} drew from stock.` });
   }
@@ -311,10 +323,20 @@ export default function MarriageRummyOnline(){
     dispatchAction({ discard: nextDiscard, players: nextPlayers, lastAction: `${me.name} took the discard.` });
   }
 
-  // Qualification rule
+  // chips ledger
+  function transferChips(fromSeat,toSeat,amount,reason){
+    if(!room || !amount) return;
+    const nextPlayers = playersN.slice();
+    nextPlayers[fromSeat] = { ...nextPlayers[fromSeat], chips: (nextPlayers[fromSeat].chips||0) - amount };
+    nextPlayers[toSeat]   = { ...nextPlayers[toSeat],   chips: (nextPlayers[toSeat].chips||0) + amount };
+    const ledger = asArray(room.ledger); ledger.push({ from: fromSeat, to: toSeat, amount, reason });
+    dispatchAction({ players: nextPlayers, ledger });
+  }
+
+  // qualification rule
   const canQualify = (melds)=> countPureMelds(melds) >= 3;
 
-  // Lay NEW melds (from STAGING)
+  // lay helpers
   function layPure(type){
     if(!room || meSeat!==currentIdx) return;
     const me = myP; if(!me || stage.length<3) return;
@@ -323,16 +345,12 @@ export default function MarriageRummyOnline(){
     const hand = (me.hand||[]).filter(id=>!stage.includes(id));
     const melds = [...(me.melds||[]), meld];
     const qualifies = me.qualifies || canQualify(melds);
-
-    // AUTO-PEEK once you qualify
     let updatedMe = { ...me, hand, melds, qualifies };
-    if (!me.hasPeeked && qualifies) { updatedMe = { ...updatedMe, hasPeeked: true }; }
-
+    if (!me.hasPeeked && qualifies) { updatedMe = { ...updatedMe, hasPeeked:true }; }
     nextPlayers[currentIdx] = updatedMe;
     setStage([]);
     dispatchAction({ players: nextPlayers, lastAction: `${me.name} laid a ${type.replace("_"," ").toLowerCase()}.` });
   }
-
   function layImpureSet(minLen){
     if(!room) return;
     const turnSeat = room.phase==="POST_LAYOFF" ? room.postLayIndex : currentIdx;
@@ -349,7 +367,8 @@ export default function MarriageRummyOnline(){
       const nextPlayers = playersN.slice();
       const hand = (me.hand||[]).filter(id=>!stage.includes(id));
       nextPlayers[turnSeat] = { ...me, hand, melds:[...(me.melds||[]), meld] };
-      setStage([]); dispatchAction({ players: nextPlayers, lastAction: `${me.name} laid a set (wild‑aware).` });
+      setStage([]);
+      dispatchAction({ players: nextPlayers, lastAction: `${me.name} laid a set (wild‑aware).` });
     } else {
       const strictMin = Math.max(4, minLen); if(stage.length<strictMin) return;
       const r = room.deck[stage[0]].rank; if(!stage.every(id=>room.deck[id].rank===r)) return;
@@ -357,10 +376,10 @@ export default function MarriageRummyOnline(){
       const nextPlayers = playersN.slice();
       const hand = (me.hand||[]).filter(id=>!stage.includes(id));
       nextPlayers[turnSeat] = { ...me, hand, melds:[...(me.melds||[]), meld] };
-      setStage([]); dispatchAction({ players: nextPlayers, lastAction: `${me.name} laid a set.` });
+      setStage([]);
+      dispatchAction({ players: nextPlayers, lastAction: `${me.name} laid a set.` });
     }
   }
-
   function layTunnela(){
     if(!room || meSeat!==currentIdx || stage.length!==3) return;
     const me = myP; const [a,b,c]=stage.map(id=>room.deck[id]);
@@ -372,11 +391,7 @@ export default function MarriageRummyOnline(){
     const melds = [...(meP.melds||[]), meld];
     const qualifies = meP.qualifies || canQualify(melds);
     let updated = { ...meP, hand, melds, qualifies };
-
-    // AUTO-PEEK once you qualify
-    if (!meP.hasPeeked && qualifies) { updated = { ...updated, hasPeeked: true }; }
-
-    // Early Tunnela bonus
+    if (!meP.hasPeeked && qualifies) { updated = { ...updated, hasPeeked:true }; }
     if(!meP.hasPicked && !meP.earlyTunnelaAwarded){
       updated = { ...updated, earlyTunnelaAwarded: true };
       for(const p of nextPlayers){ if(p.seat!==currentIdx) transferChips(p.seat, currentIdx, 10, "Early Tunnela (before first pickup)"); }
@@ -389,7 +404,7 @@ export default function MarriageRummyOnline(){
   function extendMySet(meldId){
     if(!room || room.phase!=="POST_LAYOFF") return;
     const turnSeat = room.postLayIndex;
-    if(meSeat !== turnSeat) return;        // only current layoff player
+    if(meSeat !== turnSeat) return;
     const me = playersN[turnSeat]; if(!me) return;
     if(stage.length===0) return;
 
@@ -414,7 +429,7 @@ export default function MarriageRummyOnline(){
     const nextPlayers = playersN.slice();
     const hand = (me.hand || []).filter(id => !stage.includes(id));
     const nextMelds = myMelds.slice();
-    const newType = (meldNow.type==="PURE_SET") ? "SET" : meldNow.type; // once wilds are used, mark as SET
+    const newType = (meldNow.type==="PURE_SET") ? "SET" : meldNow.type;
     nextMelds[idx] = { ...meldNow, type: newType, cards: combined };
     nextPlayers[turnSeat] = { ...me, hand, melds: nextMelds };
 
@@ -487,39 +502,48 @@ export default function MarriageRummyOnline(){
       for(let j=0;j<nextPlayers.length;j++){
         if(i===j) continue;
         const h=holdings[j]; const amt = h.singletons*5 + h.marriages*25;
-        if(amt>0) transferChips(i, j, amt, `Wild/Value bonuses (${h.singletons}×5 + ${h.marriages}×25)`);
+        if(amt>0) transferChips(i, j, amt, `Wild/Value bonuses (${h.singletons}×5 + h.marriages}×25)`);
       }
     }
     dispatchAction({ phase:"FINISHED", lastAction:"Settlement complete." });
   }
 
   // ------------------------------
-  // Drag & Drop helpers
+  // Pixel-accurate Drag & Drop
   // ------------------------------
-  function onDragStart(cardId, from, index){ setDragInfo({ id: cardId, from, index }); }
+  function onDragStart(cardId, from, index){
+    setDragInfo({ id: cardId, from, index });
+  }
   function onDragOver(e){ e.preventDefault(); } // allow drop
 
-  // Drop onto HAND (insert before targetIndex) or end
-  function dropToHand(targetIndex = null){
-    if(!dragInfo || !myP) return;
+  // Drop anywhere along the hand row (compute index from pointer x)
+  function dropToHandAtPointer(e){
+    if(!dragInfo || dragInfo.from!=="hand" || !myP) return;
     const me = myP;
-    let handOrder = [...(me.hand || [])];
+    const hand = [...(me.hand||[])];
+    const fromIdx = hand.indexOf(dragInfo.id);
+    if (fromIdx === -1) { setDragInfo(null); return; }
 
-    if (dragInfo.from === "hand") {
-      const fromIdx = handOrder.indexOf(dragInfo.id);
-      if (fromIdx === -1) return setDragInfo(null);
-      handOrder.splice(fromIdx, 1);
-      const insertAt = (targetIndex===null ? handOrder.length : Math.max(0, Math.min(targetIndex, handOrder.length)));
-      handOrder.splice(insertAt, 0, dragInfo.id);
+    const rect = handRef.current?.getBoundingClientRect();
+    if (!rect) { setDragInfo(null); return; }
+    const localX = e.clientX - rect.left;
+    // Estimate slot index from pointer; clamp to [0 .. hand.length]
+    let toIdx = Math.round(localX / SLOT_W);
+    toIdx = Math.max(0, Math.min(toIdx, hand.length));
+    // Remove origin, adjust target if origin before target
+    hand.splice(fromIdx, 1);
+    if (toIdx > fromIdx) toIdx -= 1;
+    hand.splice(toIdx, 0, dragInfo.id);
 
-      const nextPlayers = playersN.slice();
-      nextPlayers[currentIdx] = { ...me, hand: handOrder };
-      dispatchAction({ players: nextPlayers });
-    }
+    // persist order
+    const nextPlayers = playersN.slice();
+    nextPlayers[currentIdx] = { ...me, hand };
+    dispatchAction({ players: nextPlayers });
+
     setDragInfo(null);
   }
 
-  // Drop onto STAGE (insert before targetIndex) or end
+  // Stage DnD (optional: we keep previous stage reorder by dropping on staged card)
   function dropToStage(targetIndex = null){
     if(!dragInfo) return;
     let s = [...stage];
@@ -530,8 +554,6 @@ export default function MarriageRummyOnline(){
     }
     setDragInfo(null);
   }
-
-  // Reorder inside STAGE by dropping a staged card onto another staged card
   function reorderStage(targetIndex){
     if(!dragInfo || dragInfo.from!=="stage") return;
     const fromIdx = stage.indexOf(dragInfo.id);
@@ -543,410 +565,163 @@ export default function MarriageRummyOnline(){
     setStage(s);
     setDragInfo(null);
   }
-
   function toggleStage(cardId){
     setStage(prev => prev.includes(cardId) ? prev.filter(id => id!==cardId) : [...prev, cardId]);
   }
-  function clearStage(){ setStage([]); }
+  const clearStage = ()=> setStage([]);
 
   // ------------------------------
   // Early guards
   // ------------------------------
-  if(!roomId){
+  if(!room) {
     return (
-      <div style={ui.page}>
+      <div style={ui.viewport}>
         <div style={ui.shell}>
-          <h1 style={ui.h1}>Marriage Rummy — Online</h1>
-          <div style={ui.panel}>
-            <label style={ui.textSm}>Your name</label>
-            <input style={{...ui.input, marginTop:6}} value={meName} onChange={e=>setMeName(e.target.value)} placeholder="Enter name"/>
-            <div style={{...ui.grid2, marginTop:12}}>
-              <div style={ui.card}>
-                <div style={{...ui.textXs, marginBottom:6}}>Create room</div>
-                <div style={ui.row}>
-                  <input type="number" min={2} max={5} style={ui.number} value={playersCount}
-                         onChange={e=>setPlayersCount(parseInt(e.target.value)||3)}/>
-                  <button style={{...ui.btn, ...ui.btnBlue}} onClick={hostCreate}>Create</button>
-                </div>
-              </div>
-              <div style={ui.card}>
-                <div style={{...ui.textXs, marginBottom:6}}>Join room</div>
-                <JoinBox onJoin={setRoomId}/>
-              </div>
-            </div>
-          </div>
-
-          <div style={{...ui.panel, marginTop:12}}>
-            <HowTo/>
+          <div style={{position:"absolute", inset:0, display:"grid", placeItems:"center", color:"#d9f7e5"}}>
+            Loading the table…
           </div>
         </div>
       </div>
     );
   }
 
-  if(!room) return <Loader text="Connecting to room…" />;
-  if(!Array.isArray(playersN)) return <Loader text="Preparing table…" />;
-  if(room.phase==="PLAY" && (!playersN[currentIdx] || !Array.isArray(stockN) || !Array.isArray(discardN))){
-    return <Loader text="Setting the deck…" />;
-  }
-
   // ------------------------------
-  // Main views
+  // MAIN RENDER (Real Table)
   // ------------------------------
   return (
-    <div style={ui.page}>
+    <div style={ui.viewport}>
+      {/* Name prompt (always available) */}
+      <div style={ui.namePanel}>
+        <span style={{fontWeight:700}}>Your name</span>
+        <input
+          style={ui.input}
+          placeholder="Type your name"
+          value={meName}
+          onChange={e=>setMeName(e.target.value)}
+        />
+        <button onClick={saveName} style={{...ui.btn, ...ui.btnGreen}}>Save</button>
+      </div>
+
       <div style={ui.shell}>
-        {/* Header */}
-        <div style={{...ui.row, marginBottom:12}}>
-          <div>
-            <div style={ui.textXs}>Room</div>
-            <div style={{fontWeight:700, wordBreak:"break-all"}}>{room.id}</div>
+        {/* Felt table */}
+        <div style={ui.tableWrap}>
+          <div style={ui.tableSurface} />
+
+          {/* Seat plaques around table (4 seats) */}
+          {playersN.slice(0,4).map((p, idx) => (
+            <div key={p.id} style={{...ui.seatPlaque, ...seatPos(idx)}}>
+              <div style={ui.seatTitle}>
+                {p.name || `Seat ${idx+1}`} {idx===room.current && <span style={ui.mono}>• turn</span>}
+              </div>
+              <div style={ui.seatMeta}>
+                Hand: {(p.hand||[]).length} &nbsp;|&nbsp; Chips: <b>{p.chips}</b> &nbsp;|&nbsp; Qualifies: {p.qualifies? "Yes":"No"}
+              </div>
+
+              {/* If no name and I haven't sat — allow claim */}
+              {!p.name && meSeat==null && (
+                <button onClick={()=>claimSeat(idx)} style={{...ui.btn, ...ui.btnBlue, marginTop:8}}>
+                  Sit here
+                </button>
+              )}
+
+              {/* Meld belt near seat */}
+              <div style={ui.belt}>
+                {asArray(p.melds).map(m => (
+                  <div key={m.id} style={{display:"inline-flex", alignItems:"center", gap:6, padding:"4px 6px", borderRadius:12, background:"rgba(255,255,255,.12)", border:"1px solid rgba(255,255,255,.18)"}}>
+                    <span style={ui.pill}>{labelForMeld(m.type)}</span>
+                    {asArray(m.cards).map(cid => <MiniCard key={cid} card={room.deck[cid]} />)}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+
+          {/* Centre: hidden joker + stock/discard */}
+          <div style={{position:"absolute", left:"50%", top:"50%", transform:"translate(-50%,-50%)", textAlign:"center", color:"#e9fff4"}}>
+            <div style={{marginBottom:8, fontWeight:800, letterSpacing:.4}}>Hidden Joker</div>
+            <div style={{display:"flex", alignItems:"center", justifyContent:"center", gap:10, marginBottom:10}}>
+              {myP?.hasPeeked ? <Card card={room.deck[room.hiddenJokerId]}/> : <CardMask/>}
+              {!myP?.hasPeeked && (
+                <button onClick={peekJoker} disabled={!myP?.qualifies} style={{...ui.btn, ...(myP?.qualifies ? ui.btnGreen : ui.btnGray)}}>
+                  Peek ({countPureMelds(myP?.melds)}/3)
+                </button>
+              )}
+            </div>
+            <div style={{display:"flex", gap:14, justifyContent:"center"}}>
+              <div>Stock <b>{stockN.length}</b></div>
+              <div>Discard <b>{discardN.length}</b></div>
+            </div>
+            <div style={{marginTop:10}}>
+              <button onClick={drawStock} style={{...ui.btn, ...ui.btnDark, marginRight:8}}>Draw</button>
+              <button onClick={takeDiscard} style={{...ui.btn, ...ui.btnAmber}}>Pickup</button>
+            </div>
+            <div style={{marginTop:10, fontSize:12, opacity:.9}}>{room.lastAction}</div>
           </div>
-          <div style={ui.textXs}>Players: {room.options.playersCount}</div>
         </div>
 
-        {/* Lobby */}
-        {room.phase==="LOBBY" && (
-          <div style={{...ui.grid2}}>
-            <div style={ui.panel}>
-              <div style={{fontWeight:700, marginBottom:8}}>Seats</div>
-              <div style={{display:"grid", gridTemplateColumns:"repeat(3,minmax(0,1fr))", gap:8}}>
-                {playersN.map(p=>(
-                  <button key={p.seat} onClick={()=>takeSeat(p.seat)} style={{
-                    ...ui.card, textAlign:"left", border: meSeat===p.seat? "2px solid #2563EB":"1px solid #E5E7EB",
-                    background: p.name? "#ECFDF5" : "#FFF", cursor:"pointer"
-                  }}>
-                    <div style={ui.textXs}>Seat {p.seat+1}</div>
-                    <div style={{fontWeight:600, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis"}}>
-                      {p.name || "Empty"}
-                    </div>
-                  </button>
-                ))}
-              </div>
-              <div style={ui.subtle}>Tap a seat to set your name there.</div>
-            </div>
+        {/* Hand tray (bottom, sticky) */}
+        <div style={ui.tray}>
+          <div style={ui.trayTitleRow}>
+            <div style={{fontWeight:800}}>{(myP?.name ?? "You")}'s Hand ({(myP?.hand ?? []).length})</div>
+            <div style={ui.textXs}>Drag a card and drop **anywhere** along the row to reorder</div>
+          </div>
 
-            <div style={ui.panel}>
-              <div style={{fontWeight:700, marginBottom:8}}>Hidden Joker</div>
-              <div style={ui.textSm}>
-                A random card has been set as the hidden joker. You can <b>peek</b> it only after laying <b>3 pure melds</b> (pure runs or tunnela).
-              </div>
-              <div style={{marginTop:12}}>
-                {meSeat===0 ? (
-                  <button onClick={startGame} style={{...ui.btn, ...ui.btnGreen}}>Start Game</button>
-                ) : (
-                  <div style={ui.textXs}>Waiting for host to start…</div>
-                )}
-              </div>
+          {/* Your hand: pixel-accurate drop area (one container computes index) */}
+          <div
+            ref={handRef}
+            style={{display:"flex", flexWrap:"wrap", minHeight: 86}}
+            onDragOver={onDragOver}
+            onDrop={dropToHandAtPointer}
+          >
+            {(myP?.hand ?? []).map((id, idx)=>(
+              <Card
+                key={id}
+                card={room.deck[id]}
+                selected={stage.includes(id)}
+                onClick={()=>toggleStage(id)}
+                draggable
+                onDragStart={()=>onDragStart(id, "hand", idx)}
+              />
+            ))}
+          </div>
+
+          {/* Staging */}
+          <div style={{marginTop:10, display:"flex", alignItems:"center", justifyContent:"space-between"}}>
+            <div style={{fontWeight:700}}>Staging</div>
+            <div className="actions">
+              <button onClick={clearStage} style={{...ui.btn, ...ui.btnGray}}>Clear Staging</button>
             </div>
           </div>
-        )}
-
-        {/* Play */}
-        {room.phase==="PLAY" && (
-          <div style={{...ui.grid, gap:12}}>
-            {/* Turn Bar */}
-            <div style={ui.panel}>
-              <div style={ui.row}>
-                <div>
-                  <div style={ui.textXs}>Turn</div>
-                  <div style={{fontWeight:700}}>{currentP?.name ?? "Player"}</div>
-                </div>
-                <div style={{display:"flex", alignItems:"center", gap:16}}>
-                  <div style={ui.textSm}>Stock <b>{stockN.length}</b></div>
-                  <div style={ui.textSm}>Discard <b>{discardN.length}</b></div>
-
-                  {/* Joker & Peek Controls */}
-                  <div style={{display:"flex", alignItems:"center", gap:8}}>
-                    <span style={ui.textXs}>Hidden Joker</span>
-                    {myP?.hasPeeked ? (<Card card={room.deck[room.hiddenJokerId]}/>) : (<CardMask/>)}
-                    {!myP?.hasPeeked && (
-                      <button
-                        onClick={peekJoker}
-                        disabled={!myP?.qualifies}
-                        title="Requires 3 pure melds: Pure Runs or Tunnela. (Pure Sets don't count.)"
-                        style={{...ui.btn, ...(myP?.qualifies ? ui.btnGreen : ui.btnGray)}}
-                      >
-                        Peek ({countPureMelds(myP?.melds)}/3)
-                      </button>
-                    )}
-                  </div>
-
-                  <div>
-                    <button onClick={drawStock} style={{...ui.btn, ...ui.btnDark, marginRight:8}}>Draw</button>
-                    <button onClick={takeDiscard} style={{...ui.btn, ...ui.btnAmber}}>Pickup</button>
-                  </div>
-                </div>
+          <div
+            style={{marginTop:6, display:"flex", flexWrap:"wrap"}}
+            onDragOver={onDragOver}
+            onDrop={()=>dropToStage(null)}
+          >
+            {stage.map((id, idx)=>(
+              <div key={id} onDragOver={onDragOver} onDrop={()=>reorderStage(idx)}>
+                <Card
+                  card={room.deck[id]}
+                  selected
+                  onClick={()=>toggleStage(id)}
+                  draggable
+                  onDragStart={()=>onDragStart(id, "stage", idx)}
+                />
               </div>
-            </div>
-
-            {/* Hand (drag to sort) */}
-            <div style={ui.panel}>
-              <div style={ui.row}>
-                <div style={{fontWeight:700}}>
-                  {(myP?.name ?? "You")}'s Hand ({(myP?.hand ?? []).length})
-                </div>
-                <div style={ui.textXs}>Drag to sort. Click cards to add/remove from Staging.</div>
-              </div>
-
-              <div style={{marginTop:8, display:"flex", flexWrap:"wrap"}}
-                   onDragOver={onDragOver}
-                   onDrop={()=>dropToHand(null)}>
-                {(myP?.hand ?? []).map((id, idx)=>(
-                  <div key={id}
-                       onDragOver={onDragOver}
-                       onDrop={()=>dropToHand(idx)}
-                  >
-                    <Card
-                      card={room.deck[id]}
-                      selected={stage.includes(id)}
-                      onClick={()=>toggleStage(id)}
-                      draggable
-                      onDragStart={()=>onDragStart(id, "hand", idx)}
-                    />
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Staging area */}
-            <div style={ui.panel}>
-              <div style={ui.row}>
-                <div style={{fontWeight:700}}>Staging (drag cards here, reorder, then Lay)</div>
-                <div>
-                  <button onClick={clearStage} style={{...ui.btn, ...ui.btnGray}}>Clear Staging</button>
-                </div>
-              </div>
-              <div style={{marginTop:8, display:"flex", flexWrap:"wrap"}}
-                   onDragOver={onDragOver}
-                   onDrop={()=>dropToStage(null)}>
-                {stage.map((id, idx)=>(
-                  <div key={id}
-                       onDragOver={onDragOver}
-                       onDrop={()=>reorderStage(idx)}
-                  >
-                    <Card
-                      card={room.deck[id]}
-                      selected
-                      onClick={()=>toggleStage(id)}
-                      draggable
-                      onDragStart={()=>onDragStart(id, "stage", idx)}
-                    />
-                  </div>
-                ))}
-              </div>
-
-              {/* Lay buttons use STAGING */}
-              <div style={{marginTop:10}}>
-                <button onClick={()=> stage.length>=3 && layPure("PURE_RUN")} style={{...ui.btn, ...ui.btnBlue, marginRight:8}}>Lay Pure Run</button>
-                <button onClick={()=> stage.length>=3 && layPure("PURE_SET")} style={{...ui.btn, ...ui.btnDark, marginRight:8}}>Lay Pure Set</button>
-                <button onClick={layTunnela} style={{...ui.btn, ...ui.btnGreen, marginRight:8}}>Lay Tunnela (3)</button>
-                <button onClick={()=>layImpureSet(3)} style={{...ui.btn, ...ui.btnAmber, marginRight:8}}>Lay Set (impure)</button>
-              </div>
-            </div>
-
-            {/* Discard */}
-            <div style={ui.panel}>
-              <div style={{fontWeight:700, marginBottom:8}}>Discard (top last)</div>
-              <div style={{marginBottom:8}}>
-                {discardN.map(id => <Card key={id} card={room.deck[id]} />)}
-              </div>
-              <div style={{display:"flex", flexWrap:"wrap", gap:6}}>
-                {(myP?.hand ?? []).map(id=>(
-                  <button key={id} onClick={()=>discardCard(id)} style={{...ui.btn, ...ui.btnGray, padding:"6px 10px"}}>
-                    Discard <span style={ui.mono}> {room.deck[id].rank}{room.deck[id].suit}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Table (shows each player's melds) */}
-            <div style={ui.panel}>
-              <div style={{fontWeight:700, marginBottom:8}}>Table</div>
-              <div style={ui.grid3}>
-                {playersN.map((p, idx)=>(
-                  <div key={p.id} style={{...ui.card, border: idx===currentIdx? "2px solid #2563EB":"1px solid #E5E7EB"}}>
-                    <div style={ui.row}>
-                      <div style={{fontWeight:600, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis"}}>{p.name}</div>
-                      <div style={{...ui.textXs}}>{idx===currentIdx? "Playing": ""}</div>
-                    </div>
-
-                    {/* Melds gallery */}
-                    <div style={{marginTop:8}}>
-                      {(asArray(p.melds)).length===0 && (
-                        <span style={ui.textXs}>No melds yet</span>
-                      )}
-                      {asArray(p.melds).map(m => (
-                        <div key={m.id} style={{marginBottom:6}}>
-                          <span style={ui.pill}>{labelForMeld(m.type)}</span>
-                          <span style={{marginLeft:6}}>
-                            {asArray(m.cards).map(cid => <Card key={cid} card={room.deck[cid]} />)}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div style={{...ui.textXs, marginTop:6}}>
-                      Hand: {(p.hand ?? []).length} | Chips: <b>{p.chips}</b>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            ))}
           </div>
-        )}
 
-        {/* Post‑Declare Layoff */}
-        {room.phase==="POST_LAYOFF" && (
-          <div style={{...ui.grid, gap:12}}>
-            <div style={ui.panel}>
-              <div style={{fontWeight:700, marginBottom:6}}>Post‑Declare Layoff</div>
-              <div style={ui.textXs}>Winner: {playersN[room.winnerSeat]?.name ?? "Winner"}</div>
-              <div style={{fontWeight:600, marginTop:4}}>Now laying off: {playersN[room.postLayIndex]?.name ?? "Player"}</div>
-            </div>
-
-            {/* Staging to lay new sets or extend own sets */}
-            <div style={ui.panel}>
-              <div style={ui.row}>
-                <div style={{fontWeight:700}}>
-                  {(playersN[room.postLayIndex]?.name ?? "Player")}'s Hand ({(playersN[room.postLayIndex]?.hand ?? []).length})
-                </div>
-                <div style={ui.textXs}>Drag/click to stage, then Lay or Build</div>
-              </div>
-              <div style={{marginTop:8, display:"flex", flexWrap:"wrap"}}
-                   onDragOver={onDragOver}
-                   onDrop={()=>dropToStage(null)}>
-                {(playersN[room.postLayIndex]?.hand ?? []).map((id, idx)=>(
-                  <div key={id}>
-                    <Card card={room.deck[id]}
-                          selected={stage.includes(id)}
-                          onClick={()=>toggleStage(id)}
-                          draggable
-                          onDragStart={()=>onDragStart(id, "hand", idx)} />
-                  </div>
-                ))}
-              </div>
-
-              {/* STAGING row */}
-              <div style={{marginTop:10}}>
-                <div style={ui.row}>
-                  <div style={{fontWeight:700}}>Staging</div>
-                  <button onClick={()=>setStage([])} style={{...ui.btn, ...ui.btnGray}}>Clear Staging</button>
-                </div>
-                <div style={{marginTop:6, display:"flex", flexWrap:"wrap"}}
-                     onDragOver={onDragOver}
-                     onDrop={()=>dropToStage(null)}>
-                  {stage.map((id, idx)=>(
-                    <div key={id} onDragOver={onDragOver} onDrop={()=>reorderStage(idx)}>
-                      <Card card={room.deck[id]}
-                            selected
-                            onClick={()=>toggleStage(id)}
-                            draggable
-                            onDragStart={()=>onDragStart(id, "stage", idx)} />
-                    </div>
-                  ))}
-                </div>
-
-                {/* Lay new set buttons */}
-                <div style={{marginTop:10}}>
-                  <button
-                    onClick={()=> layImpureSet(playersN[room.postLayIndex]?.qualifies? 3 : 4)}
-                    style={{...ui.btn, ...ui.btnAmber, marginRight:8}}
-                  >
-                    Lay Set (min {playersN[room.postLayIndex]?.qualifies? 3 : 4})
-                  </button>
-                </div>
-
-                {/* Build ONLY on my sets */}
-                {meSeat===room.postLayIndex && (
-                  <div style={{marginTop:12}}>
-                    <div style={{fontWeight:700, marginBottom:6}}>Build on your sets</div>
-                    {asArray(myP?.melds).filter(m=>m.type==="SET"||m.type==="PURE_SET").length===0 && (
-                      <div style={ui.textXs}>You have no sets yet.</div>
-                    )}
-                    {asArray(myP?.melds).filter(m=>m.type==="SET"||m.type==="PURE_SET").map(m => (
-                      <div key={m.id} style={{marginBottom:8}}>
-                        <span style={ui.pill}>{labelForMeld(m.type)}</span>
-                        <span style={{marginLeft:6}}>
-                          {asArray(m.cards).map(cid => <Card key={cid} card={room.deck[cid]} />)}
-                        </span>
-                        <button
-                          onClick={()=>extendMySet(m.id)}
-                          style={{...ui.btn, ...ui.btnBlue, marginLeft:10}}
-                          disabled={stage.length===0}
-                          title="Add staged cards to this set (only yours)"
-                        >
-                          Build onto this set
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Done */}
-                <div style={{marginTop:12}}>
-                  <button onClick={()=>{ setStage([]); doneLayoff(); }} style={{...ui.btn, ...ui.btnGreen}}>
-                    I'm Done
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Everyone's melds (read-only) */}
-            <div style={ui.panel}>
-              <div style={{fontWeight:700, marginBottom:8}}>Table</div>
-              <div style={ui.grid3}>
-                {playersN.map(p=>(
-                  <div key={p.id} style={ui.card}>
-                    <div style={{fontWeight:600, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis"}}>{p.name}</div>
-                    <div style={{marginTop:8}}>
-                      {(asArray(p.melds)).length===0 && <span style={ui.textXs}>No melds yet</span>}
-                      {asArray(p.melds).map(m => (
-                        <div key={m.id} style={{marginBottom:6}}>
-                          <span style={ui.pill}>{labelForMeld(m.type)}</span>
-                          <span style={{marginLeft:6}}>
-                            {asArray(m.cards).map(cid => <Card key={cid} card={room.deck[cid]} />)}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                    <div style={{...ui.textXs, marginTop:6}}>Chips: <b>{p.chips}</b></div>
-                  </div>
-                ))}
-              </div>
-            </div>
+          {/* Lay controls */}
+          <div style={{...ui.actionsRow, marginTop:10}}>
+            <button onClick={()=> stage.length>=3 && layPure("PURE_RUN")} style={{...ui.btn, ...ui.btnBlue}}>Lay Pure Run</button>
+            <button onClick={()=> stage.length>=3 && layPure("PURE_SET")} style={{...ui.btn, ...ui.btnDark}}>Lay Pure Set</button>
+            <button onClick={layTunnela} style={{...ui.btn, ...ui.btnGreen}}>Lay Tunnela (3)</button>
+            <button onClick={()=>layImpureSet(3)} style={{...ui.btn, ...ui.btnAmber}}>Lay Set (impure)</button>
+            <button onClick={endTurn} style={{...ui.btn, ...ui.btnDark}}>End Turn</button>
+            {(myP?.hand ?? []).slice(0,1).map(id => (
+              <button key={id} onClick={()=>discardCard(id)} style={{...ui.btn, ...ui.btnGreen}}>Quick Declare (discard first)</button>
+            ))}
           </div>
-        )}
-
-        {/* Finished */}
-        {room.phase==="FINISHED" && (
-          <div style={{...ui.grid, gap:12}}>
-            <div style={ui.panel}>
-              <div style={{fontWeight:700, marginBottom:8}}>Round Finished</div>
-              <div style={ui.grid3}>
-                {playersN.map(p=>(
-                  <div key={p.id} style={ui.card}>
-                    <div style={{fontWeight:600}}>{p.name}</div>
-                    <div style={{...ui.textSm, marginTop:6}}>Chips: <b>{p.chips}</b></div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {(asArray(room.ledger)).length>0 && (
-              <div style={ui.panel}>
-                <div style={{fontWeight:700, marginBottom:8}}>Chip Ledger</div>
-                <ul style={{paddingLeft:18, margin:0}}>
-                  {asArray(room.ledger).map((t,i)=>(
-                    <li key={i} style={{...ui.textXs, marginBottom:4}}>
-                      <b>{playersN[t.from]?.name ?? `Seat ${t.from+1}`}</b> → <b>{playersN[t.to]?.name ?? `Seat ${t.to+1}`}</b>: {t.amount} ({t.reason})
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-        )}
+        </div>
       </div>
     </div>
   );
@@ -968,13 +743,13 @@ function labelForMeld(type){
 function Card({ card, selected, onClick, draggable=false, onDragStart }) {
   const isRed = card.suit === "♥" || card.suit === "♦";
   return (
-    <div style={ui.pcardWrap}>
+    <div style={ui.cardWrap}>
       <button
         draggable={draggable}
         onDragStart={onDragStart}
         onClick={onClick}
         style={{
-          ...ui.pcard,
+          ...ui.cardBox,
           outline: selected ? "2px solid #2563EB" : "none",
           transform: selected ? "translateY(-1px)" : "none",
           cursor: (onClick || draggable) ? "pointer" : "default",
@@ -988,46 +763,23 @@ function Card({ card, selected, onClick, draggable=false, onDragStart }) {
     </div>
   );
 }
+function MiniCard({ card }) {
+  const isRed = card.suit === "♥" || card.suit === "♦";
+  return (
+    <div style={{...ui.cardBox, width:34, height:46}}>
+      <div style={{...ui.pS(isRed), fontSize:14}}>{card.suit}</div>
+      <div style={{height:2}}/>
+      <div style={{...ui.pR(isRed), fontSize:9}}>{card.rank}</div>
+    </div>
+  );
+}
 function CardMask(){
   return (
-    <div style={ui.pcardWrap}>
-      <div style={ui.pcard}>
+    <div style={ui.cardWrap}>
+      <div style={ui.cardBox}>
         <div style={ui.pS(false)}>?</div>
         <div style={{height:4}}/>
         <div style={ui.pR(false)}>?</div>
-      </div>
-    </div>
-  );
-}
-function JoinBox({ onJoin }){
-  const [id, setId] = useState("");
-  return (
-    <div style={{display:"flex", gap:8}}>
-      <input style={ui.input} value={id} onChange={e=>setId(e.target.value)} placeholder="Paste room id"/>
-      <button style={{...ui.btn, ...ui.btnBlue}} onClick={()=> id && onJoin(id)}>Join</button>
-    </div>
-  );
-}
-function HowTo(){
-  return (
-    <div>
-      <div style={{fontWeight:700, marginBottom:6}}>How this variant works</div>
-      <ul style={{margin:0, paddingLeft:18, ...ui.textSm}}>
-        <li>Each player is dealt <b>21 cards</b> from <b>3 decks</b>. Everyone starts with <b>250 chips</b>.</li>
-        <li>Hidden joker (maal). You must hit <b>3 pure melds</b> (<b>Pure Runs</b> or <b>Tunnela</b>) to peek. <b>Pure Sets do not count.</b> Once you qualify, the joker auto‑reveals.</li>
-        <li><b>Upper</b> & <b>Lower</b> (same suit as the joker, one rank above/below) are enabled.</li>
-        <li><b>Early Tunnela:</b> If you lay a tunnela before your first pickup, each opponent pays you 10 chips.</li>
-        <li><b>Post‑declare layoff:</b> Qualified players may lay <b>wild‑aware sets (3+)</b>. Not qualified: <b>strict sets (4+)</b>. You may <b>build on your own sets only</b>.</li>
-        <li><b>Settlement:</b> Points → winner (Swedish rounding, 2 chips per 10; ≥100 → 25). Then pairwise wild/value bonuses: 5 per Joker/Upper/Lower/A of joker suit, <b>25</b> per complete L‑J‑U.</li>
-      </ul>
-    </div>
-  );
-}
-function Loader({ text }) {
-  return (
-    <div style={ui.page}>
-      <div style={ui.shell}>
-        <div style={{...ui.panel, textAlign:"center"}}>{text}</div>
       </div>
     </div>
   );
