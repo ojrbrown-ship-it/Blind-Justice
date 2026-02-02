@@ -245,7 +245,8 @@ function createRoom(playersCount = 5){
   const hiddenJokerId = order[0];
   const stock = order.slice(1);
 
-  const players = Array.from({length: playersCount}).map((_,i)=>freshPlayer(i, `Player ${i+1}`));
+  // 🔽 Initialise with EMPTY NAMES so seats start open
+  const players = Array.from({length: playersCount}).map((_,i)=>freshPlayer(i, ""));
 
   // deal 21 each
   let t=0; for(let i=0;i<playersCount*21;i++){ players[t].hand.push(stock[i]); t=(t+1)%playersCount; }
@@ -328,11 +329,11 @@ export default function MarriageRummyOnline(){
 
   function dispatchAction(partial){ if(room) update(ref(db, `rooms/${ROOM_ID}`), partial); }
 
-  // sit / rename / leave
+  // sit / rename / leave / reset seats
   async function claimSeat(seat){
     if (!room) return;
     const name = (meName || "").trim();
-    if (!name) { setToast("Enter a name first"); return; }
+    if (!name) { flashToast("Enter a name first"); return; }
 
     const nextPlayers = playersN.slice();
     // Always fresh player with 250 chips
@@ -350,11 +351,9 @@ export default function MarriageRummyOnline(){
     try { localStorage.setItem("mr_name", name); } catch (_) {}
 
     if (!room) { flashToast("Saved locally"); return; }
-
-    // If not seated, we just persist locally (it will apply on Sit here)
     if (meSeat == null) { flashToast("Saved. Sit down to apply"); return; }
 
-    // ✅ Targeted partial update (robust)
+    // Robust targeted path update
     try {
       await update(ref(db, `rooms/${ROOM_ID}/players/${meSeat}`), {
         name: name || `Player ${meSeat+1}`
@@ -382,6 +381,18 @@ export default function MarriageRummyOnline(){
     setStage([]);
     setMeSeat(null);
     flashToast("Left table");
+  }
+
+  async function resetAllSeats() {
+    if (!room) return;
+    const nextPlayers = playersN.map((_, i) => freshPlayer(i, "")); // 5 fresh empty seats
+    await update(ref(db, `rooms/${ROOM_ID}`), {
+      players: nextPlayers,
+      current: 0,
+      phase: "LOBBY",
+      lastAction: "Seats reset",
+    });
+    flashToast("Seats reset");
   }
 
   function flashToast(msg){
@@ -733,8 +744,8 @@ export default function MarriageRummyOnline(){
                 Hand: {(p.hand||[]).length} &nbsp;|&nbsp; Chips: <b>{p.chips}</b> &nbsp;|&nbsp; Has seen Joker: {p.hasPeeked ? "Yes" : "No"}
               </div>
 
-              {/* Sit here */}
-              {!p.name && meSeat==null && (
+              {/* Sit here – visible if NOT seated AND seat is empty OR default-labeled */}
+              {(meSeat == null) && (!p.name || p.name === `Player ${idx+1}`) && (
                 <button onClick={()=>claimSeat(idx)} style={{...ui.btn, ...ui.btnBlue, marginTop:8}}>
                   Sit here
                 </button>
@@ -752,7 +763,7 @@ export default function MarriageRummyOnline(){
             </div>
           ))}
 
-          {/* Centre: hidden joker + stock/discard + start/game controls */}
+          {/* Centre: hidden joker + stock/discard + lobby/game controls */}
           <div style={{position:"absolute", left:"50%", top:"50%", transform:"translate(-50%,-50%)", textAlign:"center", color:"#e9fff4"}}>
             <div style={{marginBottom:8, fontWeight:800, letterSpacing:.4}}>Hidden Joker</div>
             <div style={{display:"flex", alignItems:"center", justifyContent:"center", gap:10, marginBottom:10}}>
@@ -772,19 +783,25 @@ export default function MarriageRummyOnline(){
             <div style={{marginTop:10}}>
               {room.phase === "LOBBY" ? (
                 <>
+                  {/* Host start button (Seat 1 == index 0) */}
                   {meSeat === 0 ? (
                     <button
                       onClick={()=>{
                         const first = isSeatActive(playersN[room.current]) ? room.current : nextActiveSeat(playersN, room.current - 1);
                         update(ref(db, `rooms/${ROOM_ID}`), { phase:"PLAY", current:first, lastAction:"Game started." });
                       }}
-                      style={{...ui.btn, ...ui.btnGreen}}
+                      style={{...ui.btn, ...ui.btnGreen, marginRight:8}}
                     >
                       Start Game
                     </button>
                   ) : (
-                    <div style={{opacity:.85}}>Waiting to start… (host is Seat 1)</div>
+                    <div style={{opacity:.85, marginBottom:8}}>Waiting to start… (host is Seat 1)</div>
                   )}
+
+                  {/* Reset Seats button (available in Lobby to clear stuck names) */}
+                  <button onClick={resetAllSeats} style={{...ui.btn, ...ui.btnGray}}>
+                    Reset Seats
+                  </button>
                 </>
               ) : (
                 <>
