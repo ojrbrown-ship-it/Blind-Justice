@@ -294,6 +294,14 @@ export default function MarriageRummyOnline(){
   const [dragInfo, setDragInfo] = useState(null);         // { id, from:'hand'|'stage', index }
   const handRef = useRef(null);
 
+  // Load saved name on first render (so Save works pre-seat and Sit here picks it up)
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("mr_name");
+      if (saved) setMeName(saved);
+    } catch (_) {}
+  }, []);
+
   // Always-live room ID
   const ROOM_ID = "global";
 
@@ -319,7 +327,7 @@ export default function MarriageRummyOnline(){
 
   function dispatchAction(partial){ if(room) update(ref(db, `rooms/${ROOM_ID}`), partial); }
 
-  // sit / rename
+  // sit / rename / leave
   async function claimSeat(seat){
     if (!room) return;
     const name = (meName || "").trim();
@@ -332,12 +340,18 @@ export default function MarriageRummyOnline(){
     await update(ref(db, `rooms/${ROOM_ID}`), { players: nextPlayers });
     setMeSeat(seat);
   }
+
   async function saveName(){
-    if (!room || meSeat==null) return;
+    const name = (meName || "").trim();
+    // persist locally (works even when not seated yet)
+    try { localStorage.setItem("mr_name", name); } catch (_) {}
+
+    if (!room || meSeat == null) return; // will be applied when you "Sit here"
     const nextPlayers = playersN.slice();
-    nextPlayers[meSeat] = { ...nextPlayers[meSeat], name: (meName||"").trim() || `Player ${meSeat+1}` };
+    nextPlayers[meSeat] = { ...nextPlayers[meSeat], name: name || `Player ${meSeat+1}` };
     await update(ref(db, `rooms/${ROOM_ID}`), { players: nextPlayers });
   }
+
   async function leaveTable(){
     if (!room || meSeat==null) return;
     const nextPlayers = leaveSeatAndReset(room, meSeat);
@@ -611,7 +625,7 @@ export default function MarriageRummyOnline(){
     setDragInfo(null);
   }
 
-  // Stage DnD (we keep insert/reorder)
+  // Stage DnD (insert/reorder)
   function dropToStage(targetIndex = null){
     if(!dragInfo) return;
     let s = [...stage];
@@ -667,7 +681,14 @@ export default function MarriageRummyOnline(){
           value={meName}
           onChange={e=>setMeName(e.target.value)}
         />
-        <button onClick={saveName} style={{...ui.btn, ...ui.btnGreen}}>Save</button>
+        <button
+          onClick={saveName}
+          disabled={!meName.trim()}
+          style={{...ui.btn, ...(meName.trim() ? ui.btnGreen : ui.btnGray)}}
+          title={meName.trim() ? "Save name" : "Enter a name first"}
+        >
+          Save
+        </button>
       </div>
 
       <div style={ui.shell}>
@@ -761,7 +782,7 @@ export default function MarriageRummyOnline(){
           <div
             ref={handRef}
             style={{display:"flex", flexWrap:"wrap", minHeight: 86}}
-            onDragOver={onDragOver}
+            onDragOver={(e)=>{ e.preventDefault(); }}
             onDrop={(e)=>dropToHandAtPointer(e)}
           >
             {(myP?.hand ?? []).map((id, idx)=>(
@@ -785,11 +806,11 @@ export default function MarriageRummyOnline(){
           </div>
           <div
             style={{marginTop:6, display:"flex", flexWrap:"wrap"}}
-            onDragOver={onDragOver}
+            onDragOver={(e)=>{ e.preventDefault(); }}
             onDrop={()=>dropToStage(null)}
           >
             {stage.map((id, idx)=>(
-              <div key={id} onDragOver={onDragOver} onDrop={()=>reorderStage(idx)}>
+              <div key={id} onDragOver={(e)=>{ e.preventDefault(); }} onDrop={()=>reorderStage(idx)}>
                 <Card
                   card={room.deck[id]}
                   selected
