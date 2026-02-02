@@ -1,5 +1,5 @@
 // src/game/MarriageRummyOnline.jsx
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 // ------------------------------
 // Firebase (Realtime Database)
@@ -8,8 +8,8 @@ import { initializeApp, getApps, getApp } from "firebase/app";
 import { getDatabase, ref, set, update, push, onValue } from "firebase/database";
 
 /**
- * Prefer build-time Vite env (import.meta.env).
- * Fall back to window.__FIREBASE_CONFIG__ only if envs are missing.
+ * Prefer build-time Vite env (import.meta.env). Fall back to window.__FIREBASE_CONFIG__
+ * only if envs are missing.
  */
 const env = import.meta.env || {};
 const FIREBASE_CONFIG = {
@@ -35,7 +35,7 @@ const app = getApps().length ? getApp() : initializeApp(FIREBASE_CONFIG);
 const db  = getDatabase(app);
 
 // ------------------------------
-// Tiny design system (inline styles, no CSS framework required)
+// Tiny design system (inline styles)
 // ------------------------------
 const ui = {
   page:    { minHeight: "100vh", background: "#F5F7FB", color: "#111", fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif" },
@@ -57,24 +57,33 @@ const ui = {
   btnGreen:{ background: "#059669", color: "#fff" },
   btnAmber:{ background: "#D97706", color: "#fff" },
   btnGray: { background: "#E5E7EB", color: "#111827" },
-  badge:   { fontSize: 12, padding: "2px 8px", borderRadius: 999, background: "#F3F4F6", color:"#374151", border: "1px solid #E5E7EB" },
   subtle:  { fontSize: 12, color:"#6B7280", marginTop: 8 },
   mono:    { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" },
 
-  // Playing card styles
   pcardWrap: { display:"inline-flex", flexDirection:"column", alignItems:"center", marginRight:6, marginBottom:6 },
   pcard:  { width: 56, height: 76, borderRadius: 10, background: "#fff", border: "1px solid #E5E7EB", boxShadow:"0 2px 8px rgba(16,24,40,.06)", display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column" },
   pS: (isRed)=>({ fontSize: 18, lineHeight:"18px", color: isRed? "#DC2626" : "#111827" }),
   pR: (isRed)=>({ fontSize: 10, lineHeight:"10px", color: isRed? "#DC2626" : "#111827" }),
-  pill:   { display:"inline-flex", alignItems:"center", padding:"4px 10px", borderRadius:999, background:"#ECFDF5", color:"#065F46", border:"1px solid #A7F3D0", fontSize:12, marginRight:6, marginBottom:6 },
+  pill:   { display:"inline-flex", alignItems:"center", padding:"2px 8px", borderRadius:999, background:"#EEF2FF", color:"#3730A3", border:"1px solid #C7D2FE", fontSize:12, marginRight:6, marginBottom:6 },
 };
 
 // ------------------------------
 // Helpers, constants & rules
 // ------------------------------
-const SUITS = ["♠", "♥", "♦", "♣"];
-const RANKS = ["A","2","3","4","5","6","7","8","9","10","J","Q","K"];
+const SUITS = ["♠", "♥", "♦", "♣"];              // <— suit display order
+const RANKS = ["A","2","3","4","5","6","7","8","9","10","J","Q","K"]; // rank order
 const rankIndex = (r) => RANKS.indexOf(r);
+const suitIndex = (s) => SUITS.indexOf(s);
+
+/** Default sort: by suit (♠ ♥ ♦ ♣), then by rank (A..K) */
+function sortHandDefault(deck, handIds) {
+  return [...handIds].sort((aId, bId) => {
+    const a = deck[aId], b = deck[bId];
+    const sc = suitIndex(a.suit) - suitIndex(b.suit);
+    if (sc !== 0) return sc;
+    return rankIndex(a.rank) - rankIndex(b.rank);
+  });
+}
 
 function shuffle(arr, seed){
   const a = arr.slice();
@@ -83,13 +92,22 @@ function shuffle(arr, seed){
   for(let i=a.length-1; i>0; i--){ const j = Math.floor(rnd()*(i+1)); [a[i],a[j]] = [a[j],a[i]]; }
   return a;
 }
+
 function generateDeck(n=3){
   const out = [];
-  for(let d=0; d<n; d++) for(const suit of SUITS) for(const rank of RANKS){
-    out.push({ id:`${d}-${suit}-${rank}-${Math.random().toString(36).slice(2,8)}`, suit, rank });
+  for(let d=0; d<n; d++){
+    for(const suit of SUITS){
+      for(const rank of RANKS){
+        out.push({
+          id: `${d}-${suit}-${rank}-${Math.random().toString(36).slice(2,8)}`,
+          suit, rank
+        });
+      }
+    }
   }
   return out;
 }
+
 const isUpper=(c,h)=> c.suit===h.suit && c.rank===RANKS[(rankIndex(h.rank)+1)%RANKS.length];
 const isLower=(c,h)=> c.suit===h.suit && c.rank===RANKS[(rankIndex(h.rank)-1+RANKS.length)%RANKS.length];
 const isWild =(c,h)=> c.rank===h.rank || isUpper(c,h) || isLower(c,h);
@@ -99,6 +117,10 @@ const roundToNearest10 = (n)=> Math.round(n/10)*10;
 const asArray = (v) =>
   Array.isArray(v) ? v :
   (v && typeof v === "object") ? Object.values(v) : [];
+
+/** Count pure melds (Pure Run or Tunnela) for qualification */
+const countPureMelds = (melds) =>
+  asArray(melds).filter(m => m.type === "PURE_RUN" || m.type === "TUNNELA").length;
 
 // ------------------------------
 // Wild-aware validators
@@ -147,7 +169,7 @@ function validateSetWithWilds(cards, hidden){
   return suits.size===nonWild.length;
 }
 function validateMeldWildAware(m, deck, hidden){
-  const cards = m.cards.map(id=>deck[id]);
+  const cards = asArray(m.cards).map(id=>deck[id]);
   switch(m.type){
     case "TUNNELA":  return cards.length===3 && cards.every(c=>c.suit===cards[0].suit && c.rank===cards[0].rank);
     case "PURE_RUN": return !cards.some(c=>isWild(c,hidden)) && validatePureRun(cards);
@@ -158,10 +180,10 @@ function validateMeldWildAware(m, deck, hidden){
   }
 }
 const validatePlayerDeclarationWildAware = (p, deck, hidden) =>
-  (p?.melds||[]).length>0 && (p.melds||[]).every(m=>validateMeldWildAware(m, deck, hidden));
+  asArray(p?.melds).length>0 && asArray(p.melds).every(m=>validateMeldWildAware(m, deck, hidden));
 
 // ------------------------------
-// Room creation
+// Room creation (initial deal sorted)
 // ------------------------------
 function createRoom(playersCount){
   const seed = Math.floor(Math.random()*1e9);
@@ -177,8 +199,15 @@ function createRoom(playersCount){
     qualifies:false, hasPeeked:false, hasPicked:false, earlyTunnelaAwarded:false,
     chips:250
   }));
+
+  // Deal
   let t=0; for(let i=0;i<playersCount*21;i++){ players[t].hand.push(stock[i]); t=(t+1)%playersCount; }
   const remaining = stock.slice(playersCount*21);
+
+  // 🔽 NEW: sort each player's hand by suit → rank
+  for (const p of players) {
+    p.hand = sortHandDefault(deck, p.hand);
+  }
 
   return {
     id:"",
@@ -206,9 +235,14 @@ export default function MarriageRummyOnline(){
   const [roomId, setRoomId] = useState("");
   const [room, setRoom] = useState(null);
   const [playersCount, setPlayersCount] = useState(3);
-  const [selected, setSelected] = useState([]);
 
-  // subscribe
+  // Staging workspace
+  const [stage, setStage] = useState([]); // staged card IDs
+
+  // Drag state
+  const [dragInfo, setDragInfo] = useState(null); // {id, from:'hand'|'stage', index}
+
+  // Subscribe
   useEffect(()=>{
     if(!roomId) return;
     const r = ref(db, `rooms/${roomId}`);
@@ -216,7 +250,7 @@ export default function MarriageRummyOnline(){
     return ()=>unsub();
   },[roomId]);
 
-  // create / join / seat / start
+  // Create / Join / Seat / Start
   function hostCreate(){
     const safeCount = Math.min(5, Math.max(2, Number(playersCount) || 3));
     const newRoom = createRoom(safeCount);
@@ -246,12 +280,11 @@ export default function MarriageRummyOnline(){
   const discardN = asArray(room?.discard);
   const currentIdx = Number.isInteger(room?.current) ? room.current : 0;
   const currentP   = playersN[currentIdx];
+  const myP        = useMemo(()=> playersN[meSeat ?? -1], [playersN, meSeat]);
 
-  function myPlayer(){ return playersN[meSeat ?? -1]; }
-  function toggleSelect(id){ setSelected(prev => prev.includes(id) ? prev.filter(x=>x!==id) : [...prev, id]); }
   function dispatchAction(partial){ if(room) update(ref(db, `rooms/${room.id}`), partial); }
 
-  // Chips ledger
+  // Ledger
   function transferChips(fromSeat,toSeat,amount,reason){
     if(!room || !amount) return;
     const nextPlayers = playersN.slice();
@@ -262,7 +295,7 @@ export default function MarriageRummyOnline(){
     dispatchAction({ players: nextPlayers, ledger });
   }
 
-  // Turn actions
+  // Draw / Pickup
   function drawStock(){
     if(!room || meSeat!==currentIdx || stockN.length===0) return;
     const nextStock = stockN.slice(); const cardId = nextStock.shift();
@@ -278,21 +311,28 @@ export default function MarriageRummyOnline(){
     dispatchAction({ discard: nextDiscard, players: nextPlayers, lastAction: `${me.name} took the discard.` });
   }
 
-  // Qualification
-  const canQualify = (melds)=> (melds||[]).filter(m=>m.type==="PURE_RUN"||m.type==="TUNNELA").length>=3;
+  // Qualification rule
+  const canQualify = (melds)=> countPureMelds(melds) >= 3;
 
-  // Lay melds
+  // Lay NEW melds (from STAGING)
   function layPure(type){
     if(!room || meSeat!==currentIdx) return;
-    const me = myPlayer(); if(!me || selected.length<3) return;
-    const meld = { id:`m-${Math.random()}`, type, cards:[...selected] };
+    const me = myP; if(!me || stage.length<3) return;
+    const meld = { id:`m-${Math.random()}`, type, cards:[...stage] };
     const nextPlayers = playersN.slice();
-    const hand = (me.hand||[]).filter(id=>!selected.includes(id));
+    const hand = (me.hand||[]).filter(id=>!stage.includes(id));
     const melds = [...(me.melds||[]), meld];
     const qualifies = me.qualifies || canQualify(melds);
-    nextPlayers[currentIdx] = { ...me, hand, melds, qualifies };
-    setSelected([]); dispatchAction({ players: nextPlayers, lastAction: `${me.name} laid a ${type.replace("_"," ").toLowerCase()}.` });
+
+    // AUTO-PEEK once you qualify
+    let updatedMe = { ...me, hand, melds, qualifies };
+    if (!me.hasPeeked && qualifies) { updatedMe = { ...updatedMe, hasPeeked: true }; }
+
+    nextPlayers[currentIdx] = updatedMe;
+    setStage([]);
+    dispatchAction({ players: nextPlayers, lastAction: `${me.name} laid a ${type.replace("_"," ").toLowerCase()}.` });
   }
+
   function layImpureSet(minLen){
     if(!room) return;
     const turnSeat = room.phase==="POST_LAYOFF" ? room.postLayIndex : currentIdx;
@@ -303,41 +343,86 @@ export default function MarriageRummyOnline(){
     const required = Math.max(3, minLen);
 
     if(me.qualifies){
-      if(selected.length<required) return;
-      const cards = selected.map(id=>room.deck[id]); if(!validateSetWithWilds(cards, hidden)) return;
-      const meld = { id:`m-${Math.random()}`, type:"SET", cards:[...selected] };
+      if(stage.length<required) return;
+      const cards = stage.map(id=>room.deck[id]); if(!validateSetWithWilds(cards, hidden)) return;
+      const meld = { id:`m-${Math.random()}`, type:"SET", cards:[...stage] };
       const nextPlayers = playersN.slice();
-      const hand = (me.hand||[]).filter(id=>!selected.includes(id));
+      const hand = (me.hand||[]).filter(id=>!stage.includes(id));
       nextPlayers[turnSeat] = { ...me, hand, melds:[...(me.melds||[]), meld] };
-      setSelected([]); dispatchAction({ players: nextPlayers, lastAction: `${me.name} laid a set (wild‑aware).` });
+      setStage([]); dispatchAction({ players: nextPlayers, lastAction: `${me.name} laid a set (wild‑aware).` });
     } else {
-      const strictMin = Math.max(4, minLen); if(selected.length<strictMin) return;
-      const r = room.deck[selected[0]].rank; if(!selected.every(id=>room.deck[id].rank===r)) return;
-      const meld = { id:`m-${Math.random()}`, type:"SET", cards:[...selected] };
+      const strictMin = Math.max(4, minLen); if(stage.length<strictMin) return;
+      const r = room.deck[stage[0]].rank; if(!stage.every(id=>room.deck[id].rank===r)) return;
+      const meld = { id:`m-${Math.random()}`, type:"SET", cards:[...stage] };
       const nextPlayers = playersN.slice();
-      const hand = (me.hand||[]).filter(id=>!selected.includes(id));
+      const hand = (me.hand||[]).filter(id=>!stage.includes(id));
       nextPlayers[turnSeat] = { ...me, hand, melds:[...(me.melds||[]), meld] };
-      setSelected([]); dispatchAction({ players: nextPlayers, lastAction: `${me.name} laid a set.` });
+      setStage([]); dispatchAction({ players: nextPlayers, lastAction: `${me.name} laid a set.` });
     }
   }
+
   function layTunnela(){
-    if(!room || meSeat!==currentIdx || selected.length!==3) return;
-    const me = myPlayer(); const [a,b,c]=selected.map(id=>room.deck[id]);
+    if(!room || meSeat!==currentIdx || stage.length!==3) return;
+    const me = myP; const [a,b,c]=stage.map(id=>room.deck[id]);
     const same=(x,y)=> x && y && x.rank===y.rank && x.suit===y.suit;
     if(!(same(a,b)&&same(b,c))) return;
-    const meld = { id:`m-${Math.random()}`, type:"TUNNELA", cards:[...selected] };
+    const meld = { id:`m-${Math.random()}`, type:"TUNNELA", cards:[...stage] };
     const nextPlayers = playersN.slice(); const meP = nextPlayers[currentIdx];
-    const hand = (meP.hand||[]).filter(id=>!selected.includes(id));
+    const hand = (meP.hand||[]).filter(id=>!stage.includes(id));
     const melds = [...(meP.melds||[]), meld];
     const qualifies = meP.qualifies || canQualify(melds);
     let updated = { ...meP, hand, melds, qualifies };
+
+    // AUTO-PEEK once you qualify
+    if (!meP.hasPeeked && qualifies) { updated = { ...updated, hasPeeked: true }; }
+
+    // Early Tunnela bonus
     if(!meP.hasPicked && !meP.earlyTunnelaAwarded){
       updated = { ...updated, earlyTunnelaAwarded: true };
       for(const p of nextPlayers){ if(p.seat!==currentIdx) transferChips(p.seat, currentIdx, 10, "Early Tunnela (before first pickup)"); }
     }
     nextPlayers[currentIdx] = updated;
-    setSelected([]); dispatchAction({ players: nextPlayers, lastAction: `${meP.name} laid a tunnela.` });
+    setStage([]); dispatchAction({ players: nextPlayers, lastAction: `${meP.name} laid a tunnela.` });
   }
+
+  // Build (extend) my own SET during POST_LAYOFF
+  function extendMySet(meldId){
+    if(!room || room.phase!=="POST_LAYOFF") return;
+    const turnSeat = room.postLayIndex;
+    if(meSeat !== turnSeat) return;        // only current layoff player
+    const me = playersN[turnSeat]; if(!me) return;
+    if(stage.length===0) return;
+
+    const myMelds = asArray(me.melds);
+    const idx = myMelds.findIndex(m => m.id === meldId && (m.type==="SET" || m.type==="PURE_SET"));
+    if (idx === -1) return;
+
+    const hidden = room.deck[room.hiddenJokerId];
+    const meldNow = myMelds[idx];
+    const combined = [...asArray(meldNow.cards), ...stage];
+
+    let ok=false;
+    if (me.qualifies) {
+      const cards = combined.map(id=>room.deck[id]);
+      ok = validateSetWithWilds(cards, hidden);
+    } else {
+      const baseRank = room.deck[meldNow.cards[0]].rank;
+      ok = combined.every(id => room.deck[id].rank === baseRank) && combined.length >= 4;
+    }
+    if (!ok) return;
+
+    const nextPlayers = playersN.slice();
+    const hand = (me.hand || []).filter(id => !stage.includes(id));
+    const nextMelds = myMelds.slice();
+    const newType = (meldNow.type==="PURE_SET") ? "SET" : meldNow.type; // once wilds are used, mark as SET
+    nextMelds[idx] = { ...meldNow, type: newType, cards: combined };
+    nextPlayers[turnSeat] = { ...me, hand, melds: nextMelds };
+
+    setStage([]);
+    dispatchAction({ players: nextPlayers, lastAction: `${me.name} built onto a set.` });
+  }
+
+  // Discard / End turn / Peek
   function discardCard(cardId){
     if(!room || meSeat!==currentIdx) return;
     const nextPlayers = playersN.slice(); const p = nextPlayers[currentIdx];
@@ -354,7 +439,7 @@ export default function MarriageRummyOnline(){
   }
   const endTurn = ()=> room && dispatchAction({ current: (currentIdx+1) % playersN.length });
   const peekJoker = ()=>{
-    if(!room) return; const me=myPlayer(); if(!me||!me.qualifies||me.hasPeeked) return;
+    if(!room) return; const me=myP; if(!me||!me.qualifies||me.hasPeeked) return;
     const nextPlayers = playersN.slice(); nextPlayers[me.seat] = { ...me, hasPeeked:true };
     dispatchAction({ players: nextPlayers, lastAction: `${me.name} peeked the hidden joker.` });
   };
@@ -407,6 +492,62 @@ export default function MarriageRummyOnline(){
     }
     dispatchAction({ phase:"FINISHED", lastAction:"Settlement complete." });
   }
+
+  // ------------------------------
+  // Drag & Drop helpers
+  // ------------------------------
+  function onDragStart(cardId, from, index){ setDragInfo({ id: cardId, from, index }); }
+  function onDragOver(e){ e.preventDefault(); } // allow drop
+
+  // Drop onto HAND (insert before targetIndex) or end
+  function dropToHand(targetIndex = null){
+    if(!dragInfo || !myP) return;
+    const me = myP;
+    let handOrder = [...(me.hand || [])];
+
+    if (dragInfo.from === "hand") {
+      const fromIdx = handOrder.indexOf(dragInfo.id);
+      if (fromIdx === -1) return setDragInfo(null);
+      handOrder.splice(fromIdx, 1);
+      const insertAt = (targetIndex===null ? handOrder.length : Math.max(0, Math.min(targetIndex, handOrder.length)));
+      handOrder.splice(insertAt, 0, dragInfo.id);
+
+      const nextPlayers = playersN.slice();
+      nextPlayers[currentIdx] = { ...me, hand: handOrder };
+      dispatchAction({ players: nextPlayers });
+    }
+    setDragInfo(null);
+  }
+
+  // Drop onto STAGE (insert before targetIndex) or end
+  function dropToStage(targetIndex = null){
+    if(!dragInfo) return;
+    let s = [...stage];
+    if (!s.includes(dragInfo.id)) {
+      const insertAt = (targetIndex===null ? s.length : Math.max(0, Math.min(targetIndex, s.length)));
+      s.splice(insertAt, 0, dragInfo.id);
+      setStage(s);
+    }
+    setDragInfo(null);
+  }
+
+  // Reorder inside STAGE by dropping a staged card onto another staged card
+  function reorderStage(targetIndex){
+    if(!dragInfo || dragInfo.from!=="stage") return;
+    const fromIdx = stage.indexOf(dragInfo.id);
+    if (fromIdx === -1) return setDragInfo(null);
+    const s = [...stage];
+    s.splice(fromIdx, 1);
+    const insertAt = Math.max(0, Math.min(targetIndex, s.length));
+    s.splice(insertAt, 0, dragInfo.id);
+    setStage(s);
+    setDragInfo(null);
+  }
+
+  function toggleStage(cardId){
+    setStage(prev => prev.includes(cardId) ? prev.filter(id => id!==cardId) : [...prev, cardId]);
+  }
+  function clearStage(){ setStage([]); }
 
   // ------------------------------
   // Early guards
@@ -514,10 +655,23 @@ export default function MarriageRummyOnline(){
                 <div style={{display:"flex", alignItems:"center", gap:16}}>
                   <div style={ui.textSm}>Stock <b>{stockN.length}</b></div>
                   <div style={ui.textSm}>Discard <b>{discardN.length}</b></div>
+
+                  {/* Joker & Peek Controls */}
                   <div style={{display:"flex", alignItems:"center", gap:8}}>
                     <span style={ui.textXs}>Hidden Joker</span>
-                    {myPlayer()?.hasPeeked ? (<Card card={room.deck[room.hiddenJokerId]}/>) : (<CardMask/>)}
+                    {myP?.hasPeeked ? (<Card card={room.deck[room.hiddenJokerId]}/>) : (<CardMask/>)}
+                    {!myP?.hasPeeked && (
+                      <button
+                        onClick={peekJoker}
+                        disabled={!myP?.qualifies}
+                        title="Requires 3 pure melds: Pure Runs or Tunnela. (Pure Sets don't count.)"
+                        style={{...ui.btn, ...(myP?.qualifies ? ui.btnGreen : ui.btnGray)}}
+                      >
+                        Peek ({countPureMelds(myP?.melds)}/3)
+                      </button>
+                    )}
                   </div>
+
                   <div>
                     <button onClick={drawStock} style={{...ui.btn, ...ui.btnDark, marginRight:8}}>Draw</button>
                     <button onClick={takeDiscard} style={{...ui.btn, ...ui.btnAmber}}>Pickup</button>
@@ -526,27 +680,68 @@ export default function MarriageRummyOnline(){
               </div>
             </div>
 
-            {/* Hand */}
+            {/* Hand (drag to sort) */}
             <div style={ui.panel}>
               <div style={ui.row}>
                 <div style={{fontWeight:700}}>
-                  {(myPlayer()?.name ?? "You")}'s Hand ({(myPlayer()?.hand ?? []).length})
+                  {(myP?.name ?? "You")}'s Hand ({(myP?.hand ?? []).length})
                 </div>
-                <div style={ui.textXs}>Tap cards, then Lay</div>
+                <div style={ui.textXs}>Drag to sort. Click cards to add/remove from Staging.</div>
               </div>
-              <div style={{marginTop:8}}>
-                {(myPlayer()?.hand ?? []).map(id=>(
-                  <Card key={id} card={room.deck[id]}
-                        selected={selected.includes(id)}
-                        onClick={()=>toggleSelect(id)} />
+
+              <div style={{marginTop:8, display:"flex", flexWrap:"wrap"}}
+                   onDragOver={onDragOver}
+                   onDrop={()=>dropToHand(null)}>
+                {(myP?.hand ?? []).map((id, idx)=>(
+                  <div key={id}
+                       onDragOver={onDragOver}
+                       onDrop={()=>dropToHand(idx)}
+                  >
+                    <Card
+                      card={room.deck[id]}
+                      selected={stage.includes(id)}
+                      onClick={()=>toggleStage(id)}
+                      draggable
+                      onDragStart={()=>onDragStart(id, "hand", idx)}
+                    />
+                  </div>
                 ))}
               </div>
+            </div>
+
+            {/* Staging area */}
+            <div style={ui.panel}>
+              <div style={ui.row}>
+                <div style={{fontWeight:700}}>Staging (drag cards here, reorder, then Lay)</div>
+                <div>
+                  <button onClick={clearStage} style={{...ui.btn, ...ui.btnGray}}>Clear Staging</button>
+                </div>
+              </div>
+              <div style={{marginTop:8, display:"flex", flexWrap:"wrap"}}
+                   onDragOver={onDragOver}
+                   onDrop={()=>dropToStage(null)}>
+                {stage.map((id, idx)=>(
+                  <div key={id}
+                       onDragOver={onDragOver}
+                       onDrop={()=>reorderStage(idx)}
+                  >
+                    <Card
+                      card={room.deck[id]}
+                      selected
+                      onClick={()=>toggleStage(id)}
+                      draggable
+                      onDragStart={()=>onDragStart(id, "stage", idx)}
+                    />
+                  </div>
+                ))}
+              </div>
+
+              {/* Lay buttons use STAGING */}
               <div style={{marginTop:10}}>
-                <button onClick={()=> selected.length>=3 && layPure("PURE_RUN")} style={{...ui.btn, ...ui.btnBlue, marginRight:8}}>Lay Pure Run</button>
-                <button onClick={()=> selected.length>=3 && layPure("PURE_SET")} style={{...ui.btn, ...ui.btnDark, marginRight:8}}>Lay Pure Set</button>
+                <button onClick={()=> stage.length>=3 && layPure("PURE_RUN")} style={{...ui.btn, ...ui.btnBlue, marginRight:8}}>Lay Pure Run</button>
+                <button onClick={()=> stage.length>=3 && layPure("PURE_SET")} style={{...ui.btn, ...ui.btnDark, marginRight:8}}>Lay Pure Set</button>
                 <button onClick={layTunnela} style={{...ui.btn, ...ui.btnGreen, marginRight:8}}>Lay Tunnela (3)</button>
                 <button onClick={()=>layImpureSet(3)} style={{...ui.btn, ...ui.btnAmber, marginRight:8}}>Lay Set (impure)</button>
-                <button onClick={()=>setSelected([])} style={{...ui.btn, ...ui.btnGray}}>Clear</button>
               </div>
             </div>
 
@@ -557,7 +752,7 @@ export default function MarriageRummyOnline(){
                 {discardN.map(id => <Card key={id} card={room.deck[id]} />)}
               </div>
               <div style={{display:"flex", flexWrap:"wrap", gap:6}}>
-                {(myPlayer()?.hand ?? []).map(id=>(
+                {(myP?.hand ?? []).map(id=>(
                   <button key={id} onClick={()=>discardCard(id)} style={{...ui.btn, ...ui.btnGray, padding:"6px 10px"}}>
                     Discard <span style={ui.mono}> {room.deck[id].rank}{room.deck[id].suit}</span>
                   </button>
@@ -565,19 +760,7 @@ export default function MarriageRummyOnline(){
               </div>
             </div>
 
-            {/* Controls */}
-            <div style={ui.panel}>
-              <div style={{fontWeight:700, marginBottom:8}}>Controls</div>
-              <div style={{display:"flex", flexWrap:"wrap", gap:8}}>
-                <button onClick={endTurn} style={{...ui.btn, ...ui.btnDark}}>End Turn</button>
-                <button onClick={()=> discardCard((myPlayer()?.hand ?? [])[0])} style={{...ui.btn, ...ui.btnGreen}}>
-                  Quick Declare (discard first)
-                </button>
-                <span style={{...ui.textXs, marginLeft:6}}>{room.lastAction}</span>
-              </div>
-            </div>
-
-            {/* Table */}
+            {/* Table (shows each player's melds) */}
             <div style={ui.panel}>
               <div style={{fontWeight:700, marginBottom:8}}>Table</div>
               <div style={ui.grid3}>
@@ -587,13 +770,25 @@ export default function MarriageRummyOnline(){
                       <div style={{fontWeight:600, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis"}}>{p.name}</div>
                       <div style={{...ui.textXs}}>{idx===currentIdx? "Playing": ""}</div>
                     </div>
+
+                    {/* Melds gallery */}
+                    <div style={{marginTop:8}}>
+                      {(asArray(p.melds)).length===0 && (
+                        <span style={ui.textXs}>No melds yet</span>
+                      )}
+                      {asArray(p.melds).map(m => (
+                        <div key={m.id} style={{marginBottom:6}}>
+                          <span style={ui.pill}>{labelForMeld(m.type)}</span>
+                          <span style={{marginLeft:6}}>
+                            {asArray(m.cards).map(cid => <Card key={cid} card={room.deck[cid]} />)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+
                     <div style={{...ui.textXs, marginTop:6}}>
-                      Melds: {(p.melds ?? []).length} | Hand: {(p.hand ?? []).length}
+                      Hand: {(p.hand ?? []).length} | Chips: <b>{p.chips}</b>
                     </div>
-                    <div style={{...ui.textXs, marginTop:2}}>
-                      Qualifies: {p.qualifies? "Yes":"No"} | Peeked: {p.hasPeeked? "Yes":"No"}
-                    </div>
-                    <div style={{...ui.textXs, marginTop:2}}>Chips: <b>{p.chips}</b></div>
                   </div>
                 ))}
               </div>
@@ -610,39 +805,112 @@ export default function MarriageRummyOnline(){
               <div style={{fontWeight:600, marginTop:4}}>Now laying off: {playersN[room.postLayIndex]?.name ?? "Player"}</div>
             </div>
 
+            {/* Staging to lay new sets or extend own sets */}
             <div style={ui.panel}>
               <div style={ui.row}>
                 <div style={{fontWeight:700}}>
                   {(playersN[room.postLayIndex]?.name ?? "Player")}'s Hand ({(playersN[room.postLayIndex]?.hand ?? []).length})
                 </div>
-                <div style={ui.textXs}>Tap cards, then Lay Set</div>
+                <div style={ui.textXs}>Drag/click to stage, then Lay or Build</div>
               </div>
-              <div style={{marginTop:8}}>
-                {(playersN[room.postLayIndex]?.hand ?? []).map(id=>(
-                  <Card key={id} card={room.deck[id]} selected={selected.includes(id)} onClick={()=>toggleSelect(id)} />
+              <div style={{marginTop:8, display:"flex", flexWrap:"wrap"}}
+                   onDragOver={onDragOver}
+                   onDrop={()=>dropToStage(null)}>
+                {(playersN[room.postLayIndex]?.hand ?? []).map((id, idx)=>(
+                  <div key={id}>
+                    <Card card={room.deck[id]}
+                          selected={stage.includes(id)}
+                          onClick={()=>toggleStage(id)}
+                          draggable
+                          onDragStart={()=>onDragStart(id, "hand", idx)} />
+                  </div>
                 ))}
               </div>
+
+              {/* STAGING row */}
               <div style={{marginTop:10}}>
-                <button
-                  onClick={()=> layImpureSet(playersN[room.postLayIndex]?.qualifies? 3 : 4)}
-                  style={{...ui.btn, ...ui.btnAmber, marginRight:8}}
-                >
-                  Lay Set (min {playersN[room.postLayIndex]?.qualifies? 3 : 4})
-                </button>
-                <button onClick={()=>{ setSelected([]); doneLayoff(); }} style={{...ui.btn, ...ui.btnGreen}}>
-                  I'm Done
-                </button>
+                <div style={ui.row}>
+                  <div style={{fontWeight:700}}>Staging</div>
+                  <button onClick={()=>setStage([])} style={{...ui.btn, ...ui.btnGray}}>Clear Staging</button>
+                </div>
+                <div style={{marginTop:6, display:"flex", flexWrap:"wrap"}}
+                     onDragOver={onDragOver}
+                     onDrop={()=>dropToStage(null)}>
+                  {stage.map((id, idx)=>(
+                    <div key={id} onDragOver={onDragOver} onDrop={()=>reorderStage(idx)}>
+                      <Card card={room.deck[id]}
+                            selected
+                            onClick={()=>toggleStage(id)}
+                            draggable
+                            onDragStart={()=>onDragStart(id, "stage", idx)} />
+                    </div>
+                  ))}
+                </div>
+
+                {/* Lay new set buttons */}
+                <div style={{marginTop:10}}>
+                  <button
+                    onClick={()=> layImpureSet(playersN[room.postLayIndex]?.qualifies? 3 : 4)}
+                    style={{...ui.btn, ...ui.btnAmber, marginRight:8}}
+                  >
+                    Lay Set (min {playersN[room.postLayIndex]?.qualifies? 3 : 4})
+                  </button>
+                </div>
+
+                {/* Build ONLY on my sets */}
+                {meSeat===room.postLayIndex && (
+                  <div style={{marginTop:12}}>
+                    <div style={{fontWeight:700, marginBottom:6}}>Build on your sets</div>
+                    {asArray(myP?.melds).filter(m=>m.type==="SET"||m.type==="PURE_SET").length===0 && (
+                      <div style={ui.textXs}>You have no sets yet.</div>
+                    )}
+                    {asArray(myP?.melds).filter(m=>m.type==="SET"||m.type==="PURE_SET").map(m => (
+                      <div key={m.id} style={{marginBottom:8}}>
+                        <span style={ui.pill}>{labelForMeld(m.type)}</span>
+                        <span style={{marginLeft:6}}>
+                          {asArray(m.cards).map(cid => <Card key={cid} card={room.deck[cid]} />)}
+                        </span>
+                        <button
+                          onClick={()=>extendMySet(m.id)}
+                          style={{...ui.btn, ...ui.btnBlue, marginLeft:10}}
+                          disabled={stage.length===0}
+                          title="Add staged cards to this set (only yours)"
+                        >
+                          Build onto this set
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Done */}
+                <div style={{marginTop:12}}>
+                  <button onClick={()=>{ setStage([]); doneLayoff(); }} style={{...ui.btn, ...ui.btnGreen}}>
+                    I'm Done
+                  </button>
+                </div>
               </div>
             </div>
 
+            {/* Everyone's melds (read-only) */}
             <div style={ui.panel}>
               <div style={{fontWeight:700, marginBottom:8}}>Table</div>
               <div style={ui.grid3}>
                 {playersN.map(p=>(
                   <div key={p.id} style={ui.card}>
                     <div style={{fontWeight:600, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis"}}>{p.name}</div>
-                    <div style={{...ui.textXs, marginTop:6}}>Melds: {(p.melds ?? []).length} | Hand: {(p.hand ?? []).length}</div>
-                    <div style={{...ui.textXs, marginTop:2}}>Chips: <b>{p.chips}</b></div>
+                    <div style={{marginTop:8}}>
+                      {(asArray(p.melds)).length===0 && <span style={ui.textXs}>No melds yet</span>}
+                      {asArray(p.melds).map(m => (
+                        <div key={m.id} style={{marginBottom:6}}>
+                          <span style={ui.pill}>{labelForMeld(m.type)}</span>
+                          <span style={{marginLeft:6}}>
+                            {asArray(m.cards).map(cid => <Card key={cid} card={room.deck[cid]} />)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{...ui.textXs, marginTop:6}}>Chips: <b>{p.chips}</b></div>
                   </div>
                 ))}
               </div>
@@ -687,17 +955,30 @@ export default function MarriageRummyOnline(){
 // ------------------------------
 // Small UI bits
 // ------------------------------
-function Card({ card, selected, onClick }) {
+function labelForMeld(type){
+  switch(type){
+    case "PURE_RUN": return "Pure Run";
+    case "PURE_SET": return "Pure Set";
+    case "RUN":      return "Run";
+    case "SET":      return "Set";
+    case "TUNNELA":  return "Tunnela";
+    default:         return type;
+  }
+}
+function Card({ card, selected, onClick, draggable=false, onDragStart }) {
   const isRed = card.suit === "♥" || card.suit === "♦";
   return (
     <div style={ui.pcardWrap}>
       <button
+        draggable={draggable}
+        onDragStart={onDragStart}
         onClick={onClick}
         style={{
           ...ui.pcard,
           outline: selected ? "2px solid #2563EB" : "none",
           transform: selected ? "translateY(-1px)" : "none",
-          cursor: onClick ? "pointer" : "default",
+          cursor: (onClick || draggable) ? "pointer" : "default",
+          userSelect: "none"
         }}
       >
         <div style={ui.pS(isRed)}>{card.suit}</div>
@@ -733,11 +1014,10 @@ function HowTo(){
       <div style={{fontWeight:700, marginBottom:6}}>How this variant works</div>
       <ul style={{margin:0, paddingLeft:18, ...ui.textSm}}>
         <li>Each player is dealt <b>21 cards</b> from <b>3 decks</b>. Everyone starts with <b>250 chips</b>.</li>
-        <li>Hidden joker (maal). Peek only after laying <b>3 pure melds</b> (pure runs or tunnela). Pure sets do not count.</li>
-        <li><b>Upper</b> & <b>Lower</b> (same suit as the joker, one rank above/below) enabled.</li>
+        <li>Hidden joker (maal). You must hit <b>3 pure melds</b> (<b>Pure Runs</b> or <b>Tunnela</b>) to peek. <b>Pure Sets do not count.</b> Once you qualify, the joker auto‑reveals.</li>
+        <li><b>Upper</b> & <b>Lower</b> (same suit as the joker, one rank above/below) are enabled.</li>
         <li><b>Early Tunnela:</b> If you lay a tunnela before your first pickup, each opponent pays you 10 chips.</li>
-        <li><b>Declaration:</b> If you have qualified, melds are checked with <b>wild‑aware</b> rules before the hand can end.</li>
-        <li><b>Post‑declare layoff:</b> Qualified players may lay <b>wild‑aware sets (3+)</b>. Not qualified: <b>strict sets (4+)</b>.</li>
+        <li><b>Post‑declare layoff:</b> Qualified players may lay <b>wild‑aware sets (3+)</b>. Not qualified: <b>strict sets (4+)</b>. You may <b>build on your own sets only</b>.</li>
         <li><b>Settlement:</b> Points → winner (Swedish rounding, 2 chips per 10; ≥100 → 25). Then pairwise wild/value bonuses: 5 per Joker/Upper/Lower/A of joker suit, <b>25</b> per complete L‑J‑U.</li>
       </ul>
     </div>
