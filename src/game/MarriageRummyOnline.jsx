@@ -9,7 +9,7 @@ import { getDatabase, ref, set, update, push, onValue } from "firebase/database"
 
 /**
  * Prefer build-time Vite env (import.meta.env). Fall back to window.__FIREBASE_CONFIG__
- * only if envs are missing.
+ * only if envs are missing..
  */
 const env = import.meta.env || {};
 const FIREBASE_CONFIG = {
