@@ -1,16 +1,11 @@
 // src/game/MarriageRummyOnline.jsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
-
-// ------------------------------
-// Firebase (Realtime Database)
-// ------------------------------
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getDatabase, ref, set, update, onValue, get, child } from "firebase/database";
 
-/**
- * Prefer build-time Vite env (import.meta.env). Fall back to window.__FIREBASE_CONFIG__
- * only if envs are missing.
- */
+// ------------------------------
+// Firebase Config & Init
+// ------------------------------
 const env = import.meta.env || {};
 const FIREBASE_CONFIG = {
   apiKey:            env.VITE_FIREBASE_API_KEY        || (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.apiKey : undefined),
@@ -20,1011 +15,718 @@ const FIREBASE_CONFIG = {
   storageBucket:     env.VITE_FIREBASE_STORAGE_BUCKET  || (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.storageBucket : undefined),
   messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.messagingSenderId : undefined),
   appId:             env.VITE_FIREBASE_APP_ID          || (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.appId : undefined),
-  // optional
-  measurementId:     env.VITE_FIREBASE_MEASUREMENT_ID  || (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.measurementId : undefined),
 };
-
-if (!FIREBASE_CONFIG.databaseURL || !FIREBASE_CONFIG.projectId) {
-  console.error("[Firebase] Missing databaseURL or projectId.");
-}
 
 const app = getApps().length ? getApp() : initializeApp(FIREBASE_CONFIG);
 const db  = getDatabase(app);
 
 // ------------------------------
-// Design system + Table styles
+// Assets & Constants
 // ------------------------------
-const FELT = "#135f39";
-const FELT_DARK = "#0e4c2e";
-const ui = {
-  viewport: { minHeight: "100vh", background: "radial-gradient(1000px 600px at 50% -100px, #196a42, #0c3d27)", color: "#0c1b12", fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif" },
-  shell:    { position: "relative", maxWidth: 1280, margin: "0 auto", padding: 16, minHeight: "100vh" },
+const SUITS = ["♠", "♣", "♥", "♦"];
+const RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"];
+const getRankIdx = (r) => RANKS.indexOf(r);
+const getSuitIdx = (s) => SUITS.indexOf(s);
 
-  // Table surface
-  tableWrap:   { position: "relative", margin: "60px auto 220px", width: "100%", maxWidth: 1100, height: 540 },
-  tableSurface:{ position: "absolute", inset: 0, borderRadius: 520, background: `radial-gradient(1200px 600px at 50% 30%, ${FELT}, ${FELT_DARK})`, boxShadow: "0 60px 140px rgba(0,0,0,.45), inset 0 8px 20px rgba(255,255,255,.12), inset 0 -8px 24px rgba(0,0,0,.25)", border: "10px solid #3e2b18", outline: "1px solid rgba(255,255,255,.04)" },
-
-  // Seat plaques
-  seatPlaque:  { position:"absolute", minWidth: 220, padding: "10px 12px", borderRadius: 12, background: "rgba(255,255,255,.09)", backdropFilter: "blur(6px)", border: "1px solid rgba(255,255,255,.12)", color:"#eafff0" },
-  seatTitle:   { fontSize: 14, fontWeight: 700 },
-  seatMeta:    { fontSize: 12, opacity:.9, marginTop: 4 },
-
-  // Seat positions (5 seats around oval)
-  topSeat:     { top:-36, left:"50%", transform:"translateX(-50%)" },
-  rightTop:    { right:-10, top:"20%", transform:"translateY(-50%)" },
-  rightBottom: { right:-10, top:"70%", transform:"translateY(-50%)" },
-  bottomSeat:  { bottom:-36, left:"50%", transform:"translateX(-50%)" },
-  leftMid:     { left:-10, top:"45%", transform:"translateY(-50%)" },
-
-  // Meld belts near each seat
-  belt:        { display:"flex", flexWrap:"wrap", gap:8, marginTop:8 },
-
-  // Hand tray + staging
-  tray:        { position:"fixed", left:"50%", bottom: 16, transform:"translateX(-50%)", width:"min(1180px, 96vw)", background:"rgba(255,255,255,.96)", border:"1px solid #e6ece8", borderRadius:16, padding:12, boxShadow:"0 18px 80px rgba(0,0,0,.25)" },
-  trayTitleRow:{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, marginBottom:6 },
-  textXs:      { fontSize: 12, color:"#344e3e" },
-  actionsRow:  { display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" },
-  btn:         { border:"0", borderRadius:10, padding:"10px 14px", fontWeight:700, cursor:"pointer" },
-  btnDark:     { background:"#13251b", color:"#fff" },
-  btnBlue:     { background:"#2563EB", color:"#fff" },
-  btnGreen:    { background:"#059669", color:"#fff" },
-  btnAmber:    { background:"#D97706", color:"#fff" },
-  btnGray:     { background:"#E5E7EB", color:"#0f1f17" },
-
-  // Card visuals
-  cardWrap:    { display:"inline-flex", flexDirection:"column", alignItems:"center", marginRight:6, marginBottom:6 },
-  cardBox:     { width: 56, height: 76, borderRadius: 10, background:"#fff", border:"1px solid #dbe3dd", boxShadow:"0 2px 8px rgba(16,24,40,.10)", display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column" },
-  pS:(red)=>({ fontSize: 18, lineHeight:"18px", color:red? "#e11d48":"#0f172a" }),
-  pR:(red)=>({ fontSize: 10, lineHeight:"10px", color:red? "#e11d48":"#0f172a" }),
-  pill:       { display:"inline-flex", alignItems:"center", padding:"2px 8px", borderRadius:999, background:"#eef2ff", color:"#3730a3", border:"1px solid #c7d2fe", fontSize:12 },
-
-  // Name prompt (raised above felt)
-  namePanel:  { position:"fixed", left:"50%", top: 28, transform:"translateX(-50%)", background:"rgba(255,255,255,.96)", border:"1px solid #e6ece8", borderRadius:14, padding:"10px 12px", boxShadow:"0 10px 40px rgba(0,0,0,.2)", display:"flex", alignItems:"center", gap:8, zIndex:1000, pointerEvents:"auto" },
-  input:      { border:"1px solid #d1d5db", borderRadius:10, padding:"8px 10px", outline:"none" },
-  mono:       { fontFamily:"ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" }
+// UI Constants
+const UI = {
+  felt: "#0f3d2e",
+  feltDark: "#062218",
+  gold: "#f59e0b",
+  cardW: 56,
+  cardH: 78,
 };
 
 // ------------------------------
-// Helpers, constants & rules
+// Logic: Wilds & Rules
 // ------------------------------
-const SUITS = ["♠", "♥", "♦", "♣"]; // suit order for sort/display
-const RANKS = ["A","2","3","4","5","6","7","8","9","10","J","Q","K"];
-const rankIndex = (r) => RANKS.indexOf(r);
-const suitIndex = (s) => SUITS.indexOf(s);
 
-// card slot metrics for pixel-accurate DnD
-const CARD_W = 56;
-const CARD_G = 6;
-const SLOT_W = CARD_W + CARD_G;
-
-function sortHandDefault(deck, handIds) {
-  return [...handIds].sort((aId, bId) => {
-    const a = deck[aId], b = deck[bId];
-    const sc = suitIndex(a.suit) - suitIndex(b.suit);
-    if (sc !== 0) return sc;
-    return rankIndex(a.rank) - rankIndex(b.rank);
-  });
-}
-function shuffle(arr, seed){
-  const a = arr.slice();
-  let s = seed;
-  const rnd = () => (s = (s*1664525 + 1013904223) % 4294967296)/4294967296;
-  for(let i=a.length-1; i>0; i--){ const j = Math.floor(rnd()*(i+1)); [a[i],a[j]] = [a[j],a[i]]; }
-  return a;
-}
-function generateDeck(n=3){
-  const out = [];
-  for(let d=0; d<n; d++)
-    for(const suit of SUITS)
-      for(const rank of RANKS)
-        out.push({ id:`${d}-${suit}-${rank}-${Math.random().toString(36).slice(2,8)}`, suit, rank });
-  return out;
-}
-const isUpper=(c,h)=> c.suit===h.suit && c.rank===RANKS[(rankIndex(h.rank)+1)%RANKS.length];
-const isLower=(c,h)=> c.suit===h.suit && c.rank===RANKS[(rankIndex(h.rank)-1+RANKS.length)%RANKS.length];
-const isWild =(c,h)=> c.rank===h.rank || isUpper(c,h) || isLower(c,h);
-const roundToNearest10 = (n)=> Math.round(n/10)*10;
-
-/** Normalise Firebase list-like objects to arrays */
-const asArray = (v) =>
-  Array.isArray(v) ? v :
-  (v && typeof v === "object") ? Object.values(v) : [];
-
-/** Count pure melds (Pure Run or Tunnela) for qualification */
-const countPureMelds = (melds) =>
-  asArray(melds).filter(m => m.type === "PURE_RUN" || m.type === "TUNNELA").length;
-
-/** Next seat with a non-empty name */
-function nextActiveSeat(players, start) {
-  if (!Array.isArray(players) || players.length === 0) return 0;
-  let s = start;
-  for (let i = 0; i < players.length; i++) {
-    s = (s + 1) % players.length;
-    if ((players[s]?.name || "").trim()) return s;
-  }
-  return 0;
-}
-function isSeatActive(p) {
-  return !!((p?.name || "").trim());
-}
-
-// ------------------------------
-// Wild-aware validators
-// ------------------------------
-function validatePureRun(cards){
-  if(cards.length<3) return false;
-  const suit = cards[0].suit;
-  if(!cards.every(c=>c.suit===suit)) return false;
-  const idxs = cards.map(c=>rankIndex(c.rank)).sort((a,b)=>a-b);
-  for(let i=1;i<idxs.length;i++){
-    const gap = idxs[i]-idxs[i-1];
-    if(gap!==1 && !(idxs[i-1]===0 && idxs[i]===1)) return false; // A,2 edge
-  }
-  return true;
-}
-function validatePureSet(cards){
-  if(cards.length<3) return false;
-  const r = cards[0].rank;
-  if(!cards.every(c=>c.rank===r)) return false;
-  const suits = new Set(cards.map(c=>c.suit));
-  return suits.size===cards.length;
-}
-function validateRunWithWilds(cards, hidden){
-  if(cards.length<3) return false;
-  const nonWild = cards.filter(c=>!isWild(c,hidden));
-  if(nonWild.length===0) return false;
-  const suit = nonWild[0].suit;
-  if(!nonWild.every(c=>c.suit===suit)) return false;
-  const wilds = cards.length-nonWild.length;
-
-  const low = [...new Set(nonWild.map(c=>rankIndex(c.rank)))].sort((a,b)=>a-b);
-  let gaps=0; for(let i=1;i<low.length;i++) gaps+=Math.max(0,low[i]-low[i-1]-1);
-  const okLow = wilds>=gaps;
-
-  const high = low.map(v=>v===0?13:v).sort((a,b)=>a-b);
-  let gapsH=0; for(let i=1;i<high.length;i++) gapsH+=Math.max(0,high[i]-high[i-1]-1);
-  return okLow || wilds>=gapsH;
-}
-function validateSetWithWilds(cards, hidden){
-  if(cards.length<3) return false;
-  const nonWild = cards.filter(c=>!isWild(c,hidden));
-  if(nonWild.length===0) return false;
-  const r = nonWild[0].rank;
-  if(!nonWild.every(c=>c.rank===r)) return false;
-  const suits = new Set(nonWild.map(c=>c.suit));
-  return suits.size===nonWild.length;
-}
-function validateMeldWildAware(m, deck, hidden){
-  const cards = asArray(m.cards).map(id=>deck[id]);
-  switch(m.type){
-    case "TUNNELA":  return cards.length===3 && cards.every(c=>c.suit===cards[0].suit && c.rank===cards[0].rank);
-    case "PURE_RUN": return !cards.some(c=>isWild(c,hidden)) && validatePureRun(cards);
-    case "PURE_SET": return !cards.some(c=>isWild(c,hidden)) && validatePureSet(cards);
-    case "RUN":      return validateRunWithWilds(cards, hidden);
-    case "SET":      return validateSetWithWilds(cards, hidden);
-    default:         return false;
-  }
-}
-const validatePlayerDeclarationWildAware = (p, deck, hidden) =>
-  asArray(p?.melds).length>0 && asArray(p.melds).every(m=>validateMeldWildAware(m, deck, hidden));
-
-// ------------------------------
-// Player factory & seat reset
-// ------------------------------
-function freshPlayer(seat, name = "") {
+// 1. Identify the "Wild Suite" based on the Main Joker
+const getWildSuite = (jokerCard) => {
+  if (!jokerCard) return null;
+  const idx = getRankIdx(jokerCard.rank);
+  // Paplu = Same suit, Rank +/- 1 (Ace wraps to K and 2)
+  const lowRank  = RANKS[(idx - 1 + 13) % 13];
+  const highRank = RANKS[(idx + 1) % 13];
+  
   return {
-    id: `P${seat + 1}`,
-    name,
-    seat,
-    hand: [],
-    melds: [],
-    qualifies: false,
-    hasPeeked: false,
-    hasPicked: false,
-    earlyTunnelaAwarded: false,
-    chips: 250,
+    rankWild: jokerCard.rank,          // e.g. 7
+    papluLow: lowRank,                 // e.g. 6
+    papluHigh: highRank,               // e.g. 8
+    aceWild: "A",                      // Ace of Joker Suit is always wild
+    suit: jokerCard.suit
   };
-}
-function leaveSeatAndReset(room, seatIndex) {
-  const players = asArray(room.players).slice();
-  players[seatIndex] = freshPlayer(seatIndex, ""); // empty == open seat
-  return players;
-}
+};
 
-// ------------------------------
-// Room creation (5 seats, initial deal sorted, names EMPTY)
-// ------------------------------
-function createRoom(playersCount = 5){
-  const seed = Math.floor(Math.random()*1e9);
-  const deckArr = generateDeck(3);
-  const deck = Object.fromEntries(deckArr.map(c=>[c.id,c]));
-  const order = shuffle(Object.keys(deck), seed);
-  const hiddenJokerId = order[0];
-  const stock = order.slice(1);
+// 2. Check if a specific card is Wild
+// NOTE: Wilds only "activate" if the player has reached Weight 3 (Revealed)
+const isCardWild = (card, jokerCard, playerWeight) => {
+  if (!jokerCard || !card) return false;
+  
+  // Rule: Before Weight 3 (Blind), Wild cards act as Naturals only
+  if (playerWeight < 3) return false;
 
-  // Start with empty-named seats so Sit here shows
-  const players = Array.from({length: playersCount}).map((_,i)=>freshPlayer(i, ""));
+  const ws = getWildSuite(jokerCard);
+  
+  // 1. Rank Wild (Any suit, matching Rank)
+  if (card.rank === ws.rankWild) return true;
 
-  // First-time convenience deal (hands preserved when sitting in LOBBY)
-  let t=0; for(let i=0;i<playersCount*21;i++){ players[t].hand.push(stock[i]); t=(t+1)%playersCount; }
-  const remaining = stock.slice(playersCount*21);
-
-  // Sort dealt hands by suit -> rank
-  for (const p of players) p.hand = sortHandDefault(deck, p.hand);
-
-  return {
-    id:"global",
-    options: { playersCount, requireThreePure:true, allowPureSets:false, useUpperLower:true },
-    deck,
-    stock: remaining,
-    discard: [],
-    players,
-    current: 0,
-    phase: "LOBBY", // PLAY -> POST_LAYOFF -> FINISHED
-    hiddenJokerId,
-    seed,
-    createdAt: Date.now(),
-    lastAction: "Room created. Hidden joker set. Waiting to start.",
-    ledger: [],
-  };
-}
-
-// Seat positions around the oval for 5 seats (0..4)
-function seatPos(idx) {
-  switch ((idx % 5 + 5) % 5) {
-    case 0: return ui.topSeat;      // top
-    case 1: return ui.rightTop;     // right-top
-    case 2: return ui.rightBottom;  // right-bottom
-    case 3: return ui.bottomSeat;   // bottom
-    case 4: return ui.leftMid;      // left-mid
-    default: return ui.topSeat;
+  // 2. Suit Specific Wilds (Joker Suit only)
+  if (card.suit === ws.suit) {
+    if (card.rank === ws.papluLow) return true;
+    if (card.rank === ws.papluHigh) return true;
+    if (card.rank === ws.aceWild) return true;
   }
+  return false;
+};
+
+// 3. Calculate Meld Weight (Rules: 3-5 cards = +1, 6-8 = +2, 9+ = +3)
+const calculateMeldWeight = (melds) => {
+  if (!Array.isArray(melds)) return 0;
+  return melds.reduce((acc, m) => {
+    const len = m.cards.length;
+    if (len >= 9) return acc + 3;
+    if (len >= 6) return acc + 2;
+    if (len >= 3) return acc + 1;
+    return acc;
+  }, 0);
+};
+
+// 4. Validate Melds (The Brain)
+const validateMeld = (cards, jokerCard, playerWeight, isSettlePhase = false) => {
+  // RULE: Settle Phase for Locked Players requires MIN 4 cards for Runs
+  const isBlind = playerWeight < 3;
+  const minLen = (isSettlePhase && isBlind) ? 4 : 3;
+
+  if (cards.length < minLen) return { valid: false, error: `Min ${minLen} cards.` };
+
+  // Separate Wilds vs Naturals
+  const wildCards = cards.filter(c => isCardWild(c, jokerCard, playerWeight));
+  const naturals = cards.filter(c => !isCardWild(c, jokerCard, playerWeight));
+
+  // If all wild (rare but valid in Revealed), it's a valid run/set
+  if (naturals.length === 0) return { valid: true, type: "WILD_MELD" };
+
+  // Check Set (Same Rank)
+  const firstRank = naturals[0].rank;
+  const isRankSet = naturals.every(c => c.rank === firstRank);
+
+  if (isRankSet) {
+    if (isBlind) {
+      // BLIND RULE: Sets must be IDENTICAL (Rank + Suit)
+      const firstSuit = naturals[0].suit;
+      const isIdentical = naturals.every(c => c.suit === firstSuit);
+      if (!isIdentical) return { valid: false, error: "Blind: Sets must be Identical." };
+      return { valid: true, type: "IDENTICAL_SET" };
+    } else {
+      // REVEALED RULE: Rainbow Sets allowed (No duplicate suits)
+      const suits = new Set(naturals.map(c => c.suit));
+      if (suits.size !== naturals.length) return { valid: false, error: "Rainbow Set: No duplicate suits." };
+      return { valid: true, type: "SET" };
+    }
+  }
+
+  // Check Run (Same Suit, Sequence)
+  const firstSuit = naturals[0].suit;
+  const isSuitRun = naturals.every(c => c.suit === firstSuit);
+
+  if (isSuitRun) {
+    // Sort indices
+    const indices = naturals.map(c => getRankIdx(c.rank)).sort((a,b) => a-b);
+    
+    // Check for duplicates
+    if (new Set(indices).size !== indices.length) return { valid: false, error: "Run: Duplicates found." };
+
+    // Check gaps logic
+    // We allow Ace High (Q-K-A) or Ace Low (A-2-3)
+    // Simple gap check: (Max - Min + 1) <= Total Cards (including Wilds)
+    const span = (indices[indices.length - 1] - indices[0]) + 1;
+    
+    // Standard check
+    if (span <= cards.length) return { valid: true, type: "RUN" };
+
+    // Ace Wrap check (if Ace is present at index 0)
+    if (indices[0] === 0) {
+      const highIndices = indices.map(i => i === 0 ? 13 : i).sort((a,b)=>a-b);
+      const highSpan = (highIndices[highIndices.length-1] - highIndices[0]) + 1;
+      if (highSpan <= cards.length) return { valid: true, type: "RUN" };
+    }
+
+    return { valid: false, error: "Run: Gaps too big for Wilds." };
+  }
+
+  return { valid: false, error: "Invalid Combination." };
+};
+
+// ------------------------------
+// Helper: Deck Generation
+// ------------------------------
+function generateDeck(numDecks = 3) {
+  let deck = [];
+  for (let d = 0; d < numDecks; d++) {
+    for (let s of SUITS) {
+      for (let r of RANKS) {
+        deck.push({ id: `${d}_${s}_${r}_${Math.random().toString(36).substr(2,5)}`, suit: s, rank: r });
+      }
+    }
+  }
+  return deck;
+}
+
+function shuffle(array) {
+  for (let i = array.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [array[i], array[j]] = [array[j], array[i]];
+  }
+  return array;
 }
 
 // ------------------------------
-// Component
+// MAIN COMPONENT
 // ------------------------------
-export default function MarriageRummyOnline(){
-  const [meName, setMeName] = useState("");
-  const [meSeat, setMeSeat] = useState(null);
+export default function MarriageRummyOnline() {
+  // Local State
+  const [meName, setMeName] = useState(localStorage.getItem("mr_name") || "");
+  const [meSeat, setMeSeat] = useState(null); // 0-4
   const [room, setRoom] = useState(null);
-  const [stage, setStage] = useState([]);                 // staging area
-  const [dragInfo, setDragInfo] = useState(null);         // { id, from:'hand'|'stage', index }
-  const [toast, setToast] = useState("");                 // small UX hint on save
-  const handRef = useRef(null);
-
-  // Load saved name
-  useEffect(() => {
-    try { const saved = localStorage.getItem("mr_name"); if (saved) setMeName(saved); } catch (_) {}
-  }, []);
-
+  const [stage, setStage] = useState([]); // Card IDs in staging
+  const [buildMode, setBuildMode] = useState(false); // For adding to melds
+  const [showScoreModal, setShowScoreModal] = useState(false);
+  
   const ROOM_ID = "global";
 
-  // bootstrap: create global room if missing, then subscribe
+  // Connect to Firebase
   useEffect(() => {
-    (async () => {
-      const snap = await get(child(ref(db), `rooms/${ROOM_ID}`));
-      if (!snap.exists()) {
-        const newRoom = createRoom(5);
-        await set(ref(db, `rooms/${ROOM_ID}`), newRoom);
-      }
-      const unsub = onValue(ref(db, `rooms/${ROOM_ID}`), s => s.val() && setRoom(s.val()));
-      return () => unsub();
-    })();
+    const roomRef = ref(db, `rooms/${ROOM_ID}`);
+    const unsub = onValue(roomRef, (snap) => {
+      const val = snap.val();
+      if (val) setRoom(val);
+      else createRoom();
+    });
+    return () => unsub();
   }, []);
 
-  const playersN = asArray(room?.players);
-  const stockN   = asArray(room?.stock);
-  const discardN = asArray(room?.discard);
-  const currentIdx = Number.isInteger(room?.current) ? room.current : 0;
-  const currentP   = playersN[currentIdx];
-  const myP        = useMemo(()=> playersN[meSeat ?? -1], [playersN, meSeat]);
+  // Sync Score Modal
+  useEffect(() => {
+    if (room?.phase === "FINISHED") setShowScoreModal(true);
+    else setShowScoreModal(false);
+  }, [room?.phase]);
 
-  function dispatchAction(partial){ if(room) update(ref(db, `rooms/${ROOM_ID}`), partial); }
-
-  // Toast helper
-  function flashToast(msg){
-    setToast(msg);
-    window.clearTimeout(flashToast._t);
-    flashToast._t = window.setTimeout(()=>setToast(""), 1400);
-  }
-
-  // ------------------------------
-  // NEW: start a fresh round (re-deal) to ACTIVE seats only
-  // ------------------------------
-  async function startNewRound() {
-    if (!room) return;
-
-    // Build a fresh 3-deck shoe
-    const deckArr = generateDeck(3);
-    const deck = Object.fromEntries(deckArr.map(c => [c.id, c]));
-
-    const seed = Math.floor(Math.random() * 1e9);
-    const order = shuffle(Object.keys(deck), seed);
-    const hiddenJokerId = order[0];
-
-    // Copy current players and find active seats (with names)
-    const nextPlayers = playersN.map(p => ({ ...p }));
-    const activeIdxs = nextPlayers
-      .map((p, i) => ((p?.name || "").trim() ? i : null))
-      .filter(i => i !== null);
-
-    // If no active seats, stay in LOBBY and hint user
-    if (activeIdxs.length === 0) {
-      await update(ref(db, `rooms/${room.id || ROOM_ID}`), {
-        phase: "LOBBY",
-        lastAction: "No active seats — enter a name and Sit here, then Start again.",
-      });
-      flashToast("Add players first");
-      return;
-    }
-
-    // Reset round state (preserve chips)
-    for (let i = 0; i < nextPlayers.length; i++) {
-      nextPlayers[i] = {
-        ...nextPlayers[i],
-        hand: [],
-        melds: [],
-        qualifies: false,
-        hasPeeked: false,
-        hasPicked: false,
-        earlyTunnelaAwarded: false,
-      };
-    }
-
-    // Deal 21 to active seats round-robin
-    let stock = order.slice(1);
-    let t = 0;
-    for (let i = 0; i < activeIdxs.length * 21; i++) {
-      const seat = activeIdxs[t];
-      nextPlayers[seat].hand.push(stock[i]);
-      t = (t + 1) % activeIdxs.length;
-    }
-    stock = stock.slice(activeIdxs.length * 21);
-
-    // Sort each active hand
-    for (const i of activeIdxs) {
-      nextPlayers[i].hand = sortHandDefault(deck, nextPlayers[i].hand);
-    }
-
-    // First active seat for the turn
-    const first = isSeatActive(nextPlayers[room.current])
-      ? room.current
-      : nextActiveSeat(nextPlayers, room.current - 1);
-
-    await update(ref(db, `rooms/${room.id || ROOM_ID}`), {
-      deck,
-      stock,
+  // Create Room if missing
+  const createRoom = async () => {
+    const players = Array.from({length: 5}, (_, i) => ({
+      seat: i, name: "", chips: 250, hand: [], melds: [], 
+      hasPicked: false, hasRevealed: false
+    }));
+    await set(ref(db, `rooms/${ROOM_ID}`), {
+      players,
+      deck: [],
       discard: [],
-      players: nextPlayers,
-      current: first,
-      phase: "PLAY",
-      seed,
-      hiddenJokerId,
-      lastAction: "New round dealt.",
+      stock: [],
+      jokerCard: null,
+      turn: 0,
+      phase: "LOBBY", // LOBBY, PLAY, SETTLE, FINISHED
+      settleIndex: null, // Who is settling
+      winnerIndex: null,
+      logs: []
     });
-  }
+  };
 
-  // sit / rename / leave / reset seats
-  async function claimSeat(seat){
-    if (!room) return;
-    const name = (meName || "").trim();
-    if (!name) { flashToast("Enter a name first"); return; }
+  // ------------------------------
+  // Derived State
+  // ------------------------------
+  const myP = room?.players?.[meSeat];
+  const isMyTurn = room?.phase === "PLAY" && room?.turn === meSeat;
+  const isMySettle = room?.phase === "SETTLE" && room?.settleIndex === meSeat;
+  const jokerCard = room?.jokerCard;
+  const myWeight = useMemo(() => calculateMeldWeight(myP?.melds || []), [myP?.melds]);
+  const hasRevealed = myWeight >= 3;
 
-    const current = playersN.slice();
-    const target  = current[seat] ?? freshPlayer(seat, "");
+  // ------------------------------
+  // Actions
+  // ------------------------------
 
-    // Preserve any dealt hand in LOBBY
-    const preserveHand   = Array.isArray(target.hand)   ? target.hand   : [];
-    const preserveMelds  = Array.isArray(target.melds)  ? target.melds  : [];
-    const preserveChips  = Number.isFinite(target.chips)? target.chips  : 250;
-    const preserveFlags  = {
-      qualifies: !!target.qualifies,
-      hasPeeked: !!target.hasPeeked,
-      hasPicked: !!target.hasPicked,
-      earlyTunnelaAwarded: !!target.earlyTunnelaAwarded
-    };
-
-    current[seat] = {
-      ...target,
-      id: `P${seat+1}`,
-      seat,
-      name,
-      hand:   preserveHand,
-      melds:  preserveMelds,
-      chips:  preserveChips,
-      ...preserveFlags
-    };
-
-    await update(ref(db, `rooms/${room.id || ROOM_ID}`), { players: current });
+  const sit = async (seat) => {
+    if (!meName) return alert("Enter name first");
+    localStorage.setItem("mr_name", meName);
     setMeSeat(seat);
-    flashToast("Seated ✔");
-  }
+    await update(ref(db, `rooms/${ROOM_ID}/players/${seat}`), { name: meName });
+  };
 
-  async function saveName(){
-    const name = (meName || "").trim();
-    try { localStorage.setItem("mr_name", name); } catch (_) {}
+  const dealGame = async () => {
+    // 1. Setup Deck
+    const rawDeck = generateDeck(3);
+    const shuffled = shuffle(rawDeck);
+    
+    // 2. Identify Active Players
+    const activeSeats = room.players.filter(p => p.name).map(p => p.seat);
+    if (activeSeats.length < 2) return alert("Need 2+ players");
 
-    if (!room) { flashToast("Saved locally"); return; }
-    if (meSeat == null) { flashToast("Saved. Sit down to apply"); return; }
+    // 3. Deal 21 Cards
+    const hands = {};
+    activeSeats.forEach(seat => {
+      hands[seat] = shuffled.splice(0, 21);
+    });
 
-    try {
-      await update(ref(db, `rooms/${ROOM_ID}/players/${meSeat}`), {
-        name: name || `Player ${meSeat+1}`
+    // 4. Joker & Piles
+    const joker = shuffled.shift();
+    const discard = [shuffled.shift()];
+    
+    // 5. Update DB
+    const updates = {
+      phase: "PLAY",
+      deck: shuffled,
+      discard: discard,
+      jokerCard: joker,
+      turn: activeSeats[0],
+      logs: [`New Game Dealt. Joker is ${joker.rank}${joker.suit}`]
+    };
+
+    // Reset players
+    room.players.forEach(p => {
+      updates[`players/${p.seat}/hand`] = hands[p.seat] || [];
+      updates[`players/${p.seat}/melds`] = [];
+      updates[`players/${p.seat}/hasPicked`] = false;
+      updates[`players/${p.seat}/hasRevealed`] = false;
+    });
+
+    await update(ref(db, `rooms/${ROOM_ID}`), updates);
+  };
+
+  const handlePickup = async (source) => {
+    if (!isMyTurn || myP.hasPicked) return;
+    
+    let card;
+    let updates = {};
+
+    if (source === "STOCK") {
+      card = room.deck[0];
+      updates["deck"] = room.deck.slice(1);
+    } else {
+      card = room.discard[room.discard.length - 1];
+      updates["discard"] = room.discard.slice(0, -1);
+    }
+
+    const newHand = [...(myP.hand || []), card];
+    updates[`players/${meSeat}/hand`] = newHand;
+    updates[`players/${meSeat}/hasPicked`] = true;
+    updates[`logs`] = [...(room.logs || []).slice(-4), `${myP.name} picked from ${source}`];
+
+    await update(ref(db, `rooms/${ROOM_ID}`), updates);
+  };
+
+  const handleMeld = async () => {
+    if (!stage.length) return;
+    
+    // Validation
+    const cards = stage.map(s => s.card);
+    // Settle Phase Check: If settling and NOT revealed, run must be 4 cards
+    const isSettle = room.phase === "SETTLE";
+    const res = validateMeld(cards, jokerCard, myWeight, isSettle);
+
+    if (!res.valid) return alert(res.error);
+
+    // Update
+    const newMeld = { type: res.type, cards: cards };
+    const newHand = myP.hand.filter(c => !stage.some(s => s.id === c.id));
+    const newMelds = [...(myP.melds || []), newMeld];
+
+    // Calc weight update
+    const newWeight = calculateMeldWeight(newMelds);
+    
+    const updates = {
+      [`players/${meSeat}/hand`]: newHand,
+      [`players/${meSeat}/melds`]: newMelds,
+      [`players/${meSeat}/hasRevealed`]: newWeight >= 3
+    };
+
+    setStage([]);
+    await update(ref(db, `rooms/${ROOM_ID}`), updates);
+  };
+
+  const handleBuild = async (meldIdx) => {
+    if (!stage.length) return;
+    
+    // Build Rule: In Settle Phase, can only build if Revealed (Weight >= 3)
+    if (room.phase === "SETTLE" && myWeight < 3) return alert("Must unlock Joker (Weight 3) to build.");
+
+    const targetMeld = myP.melds[meldIdx];
+    const newCards = [...targetMeld.cards, ...stage.map(s => s.card)];
+    
+    const res = validateMeld(newCards, jokerCard, myWeight, room.phase === "SETTLE");
+    if (!res.valid) return alert(`Build Invalid: ${res.error}`);
+
+    const newHand = myP.hand.filter(c => !stage.some(s => s.id === c.id));
+    const updatedMelds = [...myP.melds];
+    updatedMelds[meldIdx] = { ...targetMeld, cards: newCards, type: res.type };
+
+    const updates = {
+      [`players/${meSeat}/hand`]: newHand,
+      [`players/${meSeat}/melds`]: updatedMelds
+    };
+
+    setStage([]);
+    setBuildMode(false);
+    await update(ref(db, `rooms/${ROOM_ID}`), updates);
+  };
+
+  const handleTennala = async () => {
+    if (myP.hasPicked) return alert("Only before pickup!");
+    if (stage.length !== 3) return alert("Select 3 cards");
+    
+    // Tennala = 3 Identical Cards
+    const c1 = stage[0].card;
+    const isIdentical = stage.every(s => s.card.rank === c1.rank && s.card.suit === c1.suit);
+    if (!isIdentical) return alert("Must be 3 Identical Cards");
+
+    // Chips Transfer logic could go here (simple version just logs it)
+    const newMeld = { type: "TENNALA", cards: stage.map(s => s.card) };
+    const newHand = myP.hand.filter(c => !stage.some(s => s.id === c.id));
+    
+    // Award Chips (+10 from everyone logic would be here)
+    // For now, just lay it down
+    const updates = {
+      [`players/${meSeat}/hand`]: newHand,
+      [`players/${meSeat}/melds`]: [...(myP.melds || []), newMeld],
+      [`logs`]: [...(room.logs||[]), `${myP.name} declared Tennala!`]
+    };
+    
+    setStage([]);
+    await update(ref(db, `rooms/${ROOM_ID}`), updates);
+  };
+
+  const handleDiscard = async () => {
+    if (!isMyTurn || !myP.hasPicked || stage.length !== 1) return alert("Select 1 card to discard");
+
+    const card = stage[0].card;
+    const newHand = myP.hand.filter(c => c.id !== card.id);
+    const newDiscard = [...room.discard, card];
+
+    // Win Condition: Hand empty after discard
+    if (newHand.length === 0) {
+      // WINNER! Trigger Settlement
+      const nextSeat = getNextActiveSeat(meSeat);
+      await update(ref(db, `rooms/${ROOM_ID}`), {
+        phase: "SETTLE",
+        winnerIndex: meSeat,
+        settleIndex: nextSeat, // Next person gets to settle
+        [`players/${meSeat}/hand`]: newHand,
+        discard: newDiscard,
+        logs: [...(room.logs||[]), `${myP.name} WINS! Settle Phase Started.`]
       });
-      flashToast("Saved ✔");
-    } catch (err) {
-      console.error("[Save name] FAILED", err);
-      flashToast("Save failed");
-    }
-  }
-
-  async function leaveTable(){
-    if (!room || meSeat==null) return;
-    const nextPlayers = leaveSeatAndReset(room, meSeat);
-
-    let nextCurrent = room.current;
-    if (meSeat === room.current) {
-      nextCurrent = nextActiveSeat(nextPlayers, room.current);
-    }
-    await update(ref(db, `rooms/${ROOM_ID}`), {
-      players: nextPlayers,
-      current: nextCurrent,
-      lastAction: `${(myP?.name || `Seat ${meSeat+1}`)} left the table`,
-    });
-    setStage([]);
-    setMeSeat(null);
-    flashToast("Left table");
-  }
-
-  async function resetAllSeats() {
-    if (!room) return;
-    const nextPlayers = playersN.map((_, i) => freshPlayer(i, "")); // 5 fresh empty seats
-    await update(ref(db, `rooms/${ROOM_ID}`), {
-      players: nextPlayers,
-      current: 0,
-      phase: "LOBBY",
-      lastAction: "Seats reset",
-    });
-    flashToast("Seats reset");
-  }
-
-  // Turn actions
-  function drawStock(){
-    if(!room || meSeat==null || meSeat!==currentIdx || stockN.length===0) return;
-    const nextStock = stockN.slice(); const cardId = nextStock.shift();
-    const nextPlayers = playersN.slice(); const me = nextPlayers[currentIdx];
-    nextPlayers[currentIdx] = { ...me, hasPicked:true, hand:[...(me.hand||[]), cardId] };
-    dispatchAction({ stock: nextStock, players: nextPlayers, lastAction: `${me.name} drew from stock.` });
-  }
-  function takeDiscard(){
-    if(!room || meSeat==null || meSeat!==currentIdx || discardN.length===0) return;
-    const nextDiscard = discardN.slice(); const cardId = nextDiscard.pop();
-    const nextPlayers = playersN.slice(); const me = nextPlayers[currentIdx];
-    nextPlayers[currentIdx] = { ...me, hasPicked:true, hand:[...(me.hand||[]), cardId] };
-    dispatchAction({ discard: nextDiscard, players: nextPlayers, lastAction: `${me.name} took the discard.` });
-  }
-
-  // chips ledger
-  function transferChips(fromSeat,toSeat,amount,reason){
-    if(!room || !amount) return;
-    const nextPlayers = playersN.slice();
-    nextPlayers[fromSeat] = { ...nextPlayers[fromSeat], chips: (nextPlayers[fromSeat].chips||0) - amount };
-    nextPlayers[toSeat]   = { ...nextPlayers[toSeat],   chips: (nextPlayers[toSeat].chips||0) + amount };
-    const ledger = asArray(room.ledger); ledger.push({ from: fromSeat, to: toSeat, amount, reason });
-    dispatchAction({ players: nextPlayers, ledger });
-  }
-
-  // qualification rule
-  const canQualify = (melds)=> countPureMelds(melds) >= 3;
-
-  // lay helpers (from STAGING)
-  function layPure(type){
-    if(!room || meSeat==null || meSeat!==currentIdx) return;
-    const me = myP; if(!me || stage.length<3) return;
-    const meld = { id:`m-${Math.random()}`, type, cards:[...stage] };
-    const nextPlayers = playersN.slice();
-    const hand = (me.hand||[]).filter(id=>!stage.includes(id));
-    const melds = [...(me.melds||[]), meld];
-    const qualifies = me.qualifies || canQualify(melds);
-    let updatedMe = { ...me, hand, melds, qualifies };
-    if (!me.hasPeeked && qualifies) { updatedMe = { ...updatedMe, hasPeeked:true }; }
-    nextPlayers[currentIdx] = updatedMe;
-    setStage([]);
-    dispatchAction({ players: nextPlayers, lastAction: `${me.name} laid a ${type.replace("_"," ").toLowerCase()}.` });
-  }
-  function layImpureSet(minLen){
-    if(!room) return;
-    const turnSeat = room.phase==="POST_LAYOFF" ? room.postLayIndex : currentIdx;
-    if(meSeat==null || meSeat!==turnSeat) return;
-    const me = playersN[turnSeat]; if(!me) return;
-
-    const hidden = room.deck[room.hiddenJokerId];
-    const required = Math.max(3, minLen);
-
-    if(me.qualifies){
-      if(stage.length<required) return;
-      const cards = stage.map(id=>room.deck[id]); if(!validateSetWithWilds(cards, hidden)) return;
-      const meld = { id:`m-${Math.random()}`, type:"SET", cards:[...stage] };
-      const nextPlayers = playersN.slice();
-      const hand = (me.hand||[]).filter(id=>!stage.includes(id));
-      nextPlayers[turnSeat] = { ...me, hand, melds:[...(me.melds||[]), meld] };
-      setStage([]);
-      dispatchAction({ players: nextPlayers, lastAction: `${me.name} laid a set (wild‑aware).` });
     } else {
-      const strictMin = Math.max(4, minLen); if(stage.length<strictMin) return;
-      const r = room.deck[stage[0]].rank; if(!stage.every(id=>room.deck[id].rank===r)) return;
-      const meld = { id:`m-${Math.random()}`, type:"SET", cards:[...stage] };
-      const nextPlayers = playersN.slice();
-      const hand = (me.hand||[]).filter(id=>!stage.includes(id));
-      nextPlayers[turnSeat] = { ...me, hand, melds:[...(me.melds||[]), meld] };
-      setStage([]);
-      dispatchAction({ players: nextPlayers, lastAction: `${me.name} laid a set.` });
+      // Next Turn
+      const nextSeat = getNextActiveSeat(meSeat);
+      await update(ref(db, `rooms/${ROOM_ID}`), {
+        turn: nextSeat,
+        [`players/${meSeat}/hand`]: newHand,
+        [`players/${meSeat}/hasPicked`]: false,
+        discard: newDiscard
+      });
     }
-  }
-  function layTunnela(){
-    if(!room || meSeat==null || meSeat!==currentIdx || stage.length!==3) return;
-    const me = myP; const [a,b,c]=stage.map(id=>room.deck[id]);
-    const same=(x,y)=> x && y && x.rank===y.rank && x.suit===y.suit;
-    if(!(same(a,b)&&same(b,c))) return;
-    const meld = { id:`m-${Math.random()}`, type:"TUNNELA", cards:[...stage] };
-    const nextPlayers = playersN.slice(); const meP = nextPlayers[currentIdx];
-    const hand = (meP.hand||[]).filter(id=>!stage.includes(id));
-    const melds = [...(meP.melds||[]), meld];
-    const qualifies = meP.qualifies || canQualify(melds);
-    let updated = { ...meP, hand, melds, qualifies };
-    if (!meP.hasPeeked && qualifies) { updated = { ...updated, hasPeeked:true }; }
-    if(!meP.hasPicked && !meP.earlyTunnelaAwarded){
-      updated = { ...updated, earlyTunnelaAwarded: true };
-      for(const p of nextPlayers){ if(p.seat!==currentIdx) transferChips(p.seat, currentIdx, 10, "Early Tunnela (before first pickup)"); }
-    }
-    nextPlayers[currentIdx] = updated;
-    setStage([]); dispatchAction({ players: nextPlayers, lastAction: `${meP.name} laid a tunnela.` });
-  }
-
-  // Build (extend) my own SET during POST_LAYOFF
-  function extendMySet(meldId){
-    if(!room || room.phase!=="POST_LAYOFF") return;
-    const turnSeat = room.postLayIndex;
-    if(meSeat == null || meSeat !== turnSeat) return;
-    const me = playersN[turnSeat]; if(!me) return;
-    if(stage.length===0) return;
-
-    const myMelds = asArray(me.melds);
-    const idx = myMelds.findIndex(m => m.id === meldId && (m.type==="SET" || m.type==="PURE_SET"));
-    if (idx === -1) return;
-
-    const hidden = room.deck[room.hiddenJokerId];
-    const meldNow = myMelds[idx];
-    const combined = [...asArray(meldNow.cards), ...stage];
-
-    let ok=false;
-    if (me.qualifies) {
-      const cards = combined.map(id=>room.deck[id]);
-      ok = validateSetWithWilds(cards, hidden);
-    } else {
-      const baseRank = room.deck[meldNow.cards[0]].rank;
-      ok = combined.every(id => room.deck[id].rank === baseRank) && combined.length >= 4;
-    }
-    if (!ok) return;
-
-    const nextPlayers = playersN.slice();
-    const hand = (me.hand || []).filter(id => !stage.includes(id));
-    const nextMelds = myMelds.slice();
-    const newType = (meldNow.type==="PURE_SET") ? "SET" : meldNow.type; // if wilds used, mark as SET
-    nextMelds[idx] = { ...meldNow, type: newType, cards: combined };
-    nextPlayers[turnSeat] = { ...me, hand, melds: nextMelds };
-
     setStage([]);
-    dispatchAction({ players: nextPlayers, lastAction: `${me.name} built onto a set.` });
-  }
-
-  // Discard / End turn / Peek
-  function discardCard(cardId){
-    if(!room || meSeat==null || meSeat!==currentIdx) return;
-    const nextPlayers = playersN.slice(); const p = nextPlayers[currentIdx];
-    if(!(p?.hand||[]).includes(cardId)) return;
-    const newHand = (p.hand||[]).filter(id=>id!==cardId);
-    if(newHand.length===0 && p.qualifies){
-      const hidden=room.deck[room.hiddenJokerId]; const valid=validatePlayerDeclarationWildAware(p, room.deck, hidden);
-      if(!valid){ dispatchAction({ lastAction: `${p.name}: invalid declare — illegal wild usage in melds.` }); return; }
-    }
-    nextPlayers[currentIdx] = { ...p, hand:newHand };
-    const lastAction = `${p.name} discarded.`;
-    if(newHand.length===0) startPostDeclare(currentIdx, nextPlayers, lastAction);
-    else dispatchAction({ players: nextPlayers, discard:[...discardN, cardId], lastAction });
-  }
-  const endTurn = ()=> {
-    if (!room) return;
-    const next = nextActiveSeat(playersN, currentIdx);
-    dispatchAction({ current: next });
-  };
-  const peekJoker = ()=>{
-    if(!room) return; const me=myP; if(!me||!me.qualifies||me.hasPeeked) return;
-    const nextPlayers = playersN.slice(); nextPlayers[me.seat] = { ...me, hasPeeked:true };
-    dispatchAction({ players: nextPlayers, lastAction: `${me.name} peeked the hidden joker.` });
   };
 
-  // Post‑declare & settlement
-  function startPostDeclare(winnerSeat, nextPlayers, lastAction){
-    const nextSeat = nextActiveSeat(nextPlayers, winnerSeat);
-    dispatchAction({ players: nextPlayers, winnerSeat, postLayIndex: nextSeat, phase:"POST_LAYOFF", lastAction });
-  }
-  function doneLayoff(){
-    if(!room) return;
-    const next = nextActiveSeat(playersN, room.postLayIndex);
-    if (next === room.winnerSeat) performSettlement();
-    else dispatchAction({ postLayIndex: next });
-  }
-  function pointsInHand(cards, hidden){
-    let sum=0;
-    for(const c of cards){
-      if(isWild(c,hidden)) continue;
-      if(["J","Q","K","A"].includes(c.rank)) sum+=10;
-      else sum+=parseInt(c.rank,10)||0;
+  const handleSettleDone = async () => {
+    if (!isMySettle) return;
+    
+    // Move to next settler
+    let nextSeat = getNextActiveSeat(meSeat);
+    
+    // If next is Winner, everyone is done -> Calc Scores
+    if (nextSeat === room.winnerIndex) {
+      finalizeScores();
+    } else {
+      await update(ref(db, `rooms/${ROOM_ID}`), { settleIndex: nextSeat });
     }
-    return sum;
-  }
-  function analyseHoldings(cards, hidden){
-    const suit=hidden.suit, jokerRank=hidden.rank;
-    const low = RANKS[(rankIndex(jokerRank)-1+RANKS.length)%RANKS.length];
-    const up  = RANKS[(rankIndex(jokerRank)+1)%RANKS.length];
-    const count={};
-    for(const c of cards){
-      if(c.rank===jokerRank) count[`${c.suit}-${c.rank}`]=(count[`${c.suit}-${c.rank}`]||0)+1;
-      if(c.suit===suit && (c.rank===low || c.rank===up || c.rank==="A")) count[`${c.suit}-${c.rank}`]=(count[`${c.suit}-${c.rank}`]||0)+1;
-    }
-    const L=count[`${suit}-${low}`]||0, J=count[`${suit}-${jokerRank}`]||0, U=count[`${suit}-${up}`]||0;
-    const marriages=Math.min(L,J,U);
-    const singles=[]; for(const k in count) singles.push(...Array(count[k]).fill(k));
-    const rm=k=>{ const i=singles.indexOf(k); if(i>=0) singles.splice(i,1); };
-    for(let m=0;m<marriages;m++){ rm(`${suit}-${low}`); rm(`${suit}-${jokerRank}`); rm(`${suit}-${up}`); }
-    let singletons=0;
-    for(const tag of singles){
-      const [s,r]=tag.split("-");
-      if(r===jokerRank) singletons++;
-      else if(s===suit && (r===low||r===up||r==="A")) singletons++;
-    }
-    return { singletons, marriages };
-  }
-  function performSettlement(){
-    if(!room) return;
-    const hidden = room.deck[room.hiddenJokerId];
-    const nextPlayers = playersN.slice();
-    const winner = room.winnerSeat;
+  };
 
-    for(const p of nextPlayers){
-      if(p.seat===winner) continue;
-      const points = pointsInHand((p.hand||[]).map(id=>room.deck[id]), hidden);
-      const rounded = roundToNearest10(points);
-      const chips = rounded>=100 ? 25 : (rounded/10)*2;
-      if(chips>0) transferChips(p.seat, winner, chips, `Points ${points} -> ${rounded} (to winner)`);
-    }
-    const holdings = nextPlayers.map(p=>analyseHoldings((p.hand||[]).map(id=>room.deck[id]), hidden));
-    for(let i=0;i<nextPlayers.length;i++){
-      for(let j=0;j<nextPlayers.length;j++){
-        if(i===j) continue;
-        const h=holdings[j];
-        const amt = h.singletons*5 + h.marriages*25;
-        if(amt>0) transferChips(i, j, amt, `Wild/Value bonuses (${h.singletons}×5 + ${h.marriages}×25)`);
+  const finalizeScores = async () => {
+    const players = room.players;
+    const winner = room.winnerIndex;
+    const ws = getWildSuite(room.jokerCard);
+
+    let transfers = Array(5).fill(0); // Net chip change
+    let logs = [];
+
+    // 1. Asset Calculation (Everyone pays Everyone)
+    players.forEach(p => {
+      if (!p.name) return;
+      const allCards = [...(p.hand||[]), ...(p.melds||[]).flatMap(m=>m.cards)];
+      
+      const hasLow = allCards.some(c => c.rank === ws.papluLow && c.suit === ws.suit);
+      const hasRank = allCards.some(c => c.rank === ws.rankWild && c.suit === ws.suit);
+      const hasHigh = allCards.some(c => c.rank === ws.papluHigh && c.suit === ws.suit);
+      const hasAce = allCards.some(c => c.rank === ws.aceWild && c.suit === ws.suit);
+
+      let gainPerOpp = 0;
+      if (hasLow && hasRank && hasHigh) {
+        gainPerOpp += 25; // Marriage
+        logs.push(`${p.name}: Marriage (+25)`);
+      } else {
+        if (hasLow) { gainPerOpp += 5; logs.push(`${p.name}: Low Paplu (+5)`); }
+        if (hasRank) { gainPerOpp += 5; logs.push(`${p.name}: Rank Wild (+5)`); }
+        if (hasHigh) { gainPerOpp += 5; logs.push(`${p.name}: High Paplu (+5)`); }
       }
+      if (ws.rankWild !== "A" && hasAce) {
+         gainPerOpp += 5; 
+         logs.push(`${p.name}: Ace Wild (+5)`);
+      }
+
+      if (gainPerOpp > 0) {
+        const activeCount = players.filter(pl=>pl.name).length;
+        const totalGain = gainPerOpp * (activeCount - 1);
+        transfers[p.seat] += totalGain;
+        players.forEach(opp => {
+          if (opp.seat !== p.seat && opp.name) transfers[opp.seat] -= gainPerOpp;
+        });
+      }
+    });
+
+    // 2. Penalty Calculation (Losers pay Winner)
+    let totalPot = 0;
+    players.forEach(p => {
+      if (!p.name || p.seat === winner) return;
+      
+      // Calculate Deadwood
+      const deadwood = p.hand || [];
+      // Value: Sum of naturals (Wilds = 0)
+      const value = deadwood.reduce((acc, c) => {
+        if (isCardWild(c, room.jokerCard, 3)) return acc; // Assuming full reveal for penalty calc
+        const v = ["10","J","Q","K","A"].includes(c.rank) ? 10 : parseInt(c.rank);
+        return acc + v;
+      }, 0);
+
+      // Rule: (Val / 10) rounded * 2. Cap at 25 chips.
+      let chips = Math.round(value / 10) * 2;
+      if (value >= 96) chips = 25;
+
+      transfers[p.seat] -= chips;
+      totalPot += chips;
+      logs.push(`${p.name}: Penalty -${chips} (Hand Value: ${value})`);
+    });
+
+    transfers[winner] += totalPot;
+    logs.push(`${players[winner].name}: Won Pot +${totalPot}`);
+
+    // Update DB
+    const updates = {
+      phase: "FINISHED",
+      logs: logs,
+      results: transfers // store for modal
+    };
+    players.forEach(p => {
+        if(p.name) updates[`players/${p.seat}/chips`] = (p.chips || 0) + transfers[p.seat];
+    });
+
+    await update(ref(db, `rooms/${ROOM_ID}`), updates);
+  };
+
+  // Helpers
+  const getNextActiveSeat = (current) => {
+    let next = (current + 1) % 5;
+    while (!room.players[next].name) {
+      next = (next + 1) % 5;
     }
-    dispatchAction({ phase:"FINISHED", lastAction:"Settlement complete." });
-  }
+    return next;
+  };
 
   // ------------------------------
-  // Pixel-accurate Drag & Drop
+  // UI RENDER
   // ------------------------------
-  function onDragStart(cardId, from, index){ setDragInfo({ id: cardId, from, index }); }
-  function onDragOver(e){ e.preventDefault(); } // allow drop
+  if (!room) return <div style={{color:'#fff'}}>Loading...</div>;
 
-  // Drop anywhere along the hand row (compute index from pointer x)
-  function dropToHandAtPointer(e){
-    if(!dragInfo || dragInfo.from!=="hand" || !myP) return;
-    const me = myP;
-    const hand = [...(me.hand||[])];
-    const fromIdx = hand.indexOf(dragInfo.id);
-    if (fromIdx === -1) { setDragInfo(null); return; }
-
-    const rect = handRef.current?.getBoundingClientRect();
-    if (!rect) { setDragInfo(null); return; }
-    const localX = e.clientX - rect.left;
-    // Estimate slot index from pointer; clamp
-    let toIdx = Math.round(localX / SLOT_W);
-    toIdx = Math.max(0, Math.min(toIdx, hand.length));
-    // Remove origin, adjust target if origin before target
-    hand.splice(fromIdx, 1);
-    if (toIdx > fromIdx) toIdx -= 1;
-    hand.splice(toIdx, 0, dragInfo.id);
-
-    // persist order
-    const nextPlayers = playersN.slice();
-    nextPlayers[currentIdx] = { ...me, hand };
-    dispatchAction({ players: nextPlayers });
-
-    setDragInfo(null);
-  }
-
-  // Stage DnD (insert/reorder)
-  function dropToStage(targetIndex = null){
-    if(!dragInfo) return;
-    let s = [...stage];
-    if (!s.includes(dragInfo.id)) {
-      const insertAt = (targetIndex===null ? s.length : Math.max(0, Math.min(targetIndex, s.length)));
-      s.splice(insertAt, 0, dragInfo.id);
-      setStage(s);
-    }
-    setDragInfo(null);
-  }
-  function reorderStage(targetIndex){
-    if(!dragInfo || dragInfo.from!=="stage") return;
-    const fromIdx = stage.indexOf(dragInfo.id);
-    if (fromIdx === -1) return setDragInfo(null);
-    const s = [...stage];
-    s.splice(fromIdx, 1);
-    const insertAt = Math.max(0, Math.min(targetIndex, s.length));
-    s.splice(insertAt, 0, dragInfo.id);
-    setStage(s);
-    setDragInfo(null);
-  }
-  function toggleStage(cardId){
-    setStage(prev => prev.includes(cardId) ? prev.filter(id => id!==cardId) : [...prev, cardId]);
-  }
-  const clearStage = ()=> setStage([]);
-
-  // ------------------------------
-  // Early guards
-  // ------------------------------
-  if(!room) {
-    return (
-      <div style={ui.viewport}>
-        <div style={ui.shell}>
-          <div style={{position:"absolute", inset:0, display:"grid", placeItems:"center", color:"#d9f7e5"}}>
-            Loading the table…
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ------------------------------
-  // MAIN RENDER (Real Table, 5 seats)
-  // ------------------------------
   return (
-    <div style={ui.viewport}>
-      {/* Name prompt (form to support Enter) */}
-      <form
-        style={ui.namePanel}
-        onSubmit={(e)=>{ e.preventDefault(); saveName(); }}
-      >
-        <span style={{fontWeight:700}}>Your name</span>
-        <input
-          style={ui.input}
-          placeholder="Type your name"
-          value={meName}
-          onChange={e=>setMeName(e.target.value)}
-        />
-        <button
-          type="submit"
-          disabled={!meName.trim()}
-          style={{...ui.btn, ...(meName.trim() ? ui.btnGreen : ui.btnGray)}}
-          title={meName.trim() ? "Save name" : "Enter a name first"}
-        >
-          Save
-        </button>
-        {toast && (
-          <span style={{marginLeft:8, fontSize:12, color:"#0f5132"}}>{toast}</span>
-        )}
-      </form>
-
-      <div style={ui.shell}>
-        {/* Felt table */}
-        <div style={ui.tableWrap}>
-          <div style={ui.tableSurface} />
-
-          {/* Seat plaques around table (5 seats) */}
-          {playersN.slice(0,5).map((p, idx) => (
-            <div key={p.id || idx} style={{...ui.seatPlaque, ...seatPos(idx)}}>
-              <div style={ui.seatTitle}>
-                {p.name || `Seat ${idx+1}`} {idx===room.current && <span style={ui.mono}>• turn</span>}
-              </div>
-              <div style={ui.seatMeta}>
-                Hand: {(p.hand||[]).length} &nbsp;|&nbsp; Chips: <b>{p.chips}</b> &nbsp;|&nbsp; Has seen Joker: {p.hasPeeked ? "Yes" : "No"}
-              </div>
-
-              {/* Sit here – visible if NOT seated AND seat is empty OR default-labeled */}
-              {(meSeat == null) && (!p.name || p.name === `Player ${idx+1}`) && (
-                <button onClick={()=>claimSeat(idx)} style={{...ui.btn, ...ui.btnBlue, marginTop:8}}>
-                  Sit here
-                </button>
-              )}
-
-              {/* Meld belt near seat */}
-              <div style={ui.belt}>
-                {asArray(p.melds).map(m => (
-                  <div key={m.id} style={{display:"inline-flex", alignItems:"center", gap:6, padding:"4px 6px", borderRadius:12, background:"rgba(255,255,255,.12)", border:"1px solid rgba(255,255,255,.18)"}}>
-                    <span style={ui.pill}>{labelForMeld(m.type)}</span>
-                    {asArray(m.cards).map(cid => <MiniCard key={cid} card={room.deck[cid]} />)}
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-
-          {/* Centre: hidden joker + stock/discard + lobby/game controls */}
-          <div style={{position:"absolute", left:"50%", top:"50%", transform:"translate(-50%,-50%)", textAlign:"center", color:"#e9fff4"}}>
-            <div style={{marginBottom:8, fontWeight:800, letterSpacing:.4}}>Hidden Joker</div>
-            <div style={{display:"flex", alignItems:"center", justifyContent:"center", gap:10, marginBottom:10}}>
-              {myP?.hasPeeked ? <Card card={room.deck[room.hiddenJokerId]}/> : <CardMask/>}
-              {!myP?.hasPeeked && (
-                <button onClick={peekJoker} disabled={!myP?.qualifies} style={{...ui.btn, ...(myP?.qualifies ? ui.btnGreen : ui.btnGray)}}>
-                  Peek ({countPureMelds(myP?.melds)}/3)
-                </button>
-              )}
-            </div>
-
-            <div style={{display:"flex", gap:14, justifyContent:"center"}}>
-              <div>Stock <b>{stockN.length}</b></div>
-              <div>Discard <b>{discardN.length}</b></div>
-            </div>
-
-            <div style={{marginTop:10}}>
-              {room.phase === "LOBBY" ? (
-                <>
-                  {/* Host start button (Seat 1 == index 0) */}
-                  {meSeat === 0 ? (
-                    <button
-                      onClick={startNewRound}
-                      style={{...ui.btn, ...ui.btnGreen, marginRight:8}}
-                    >
-                      Start Game
-                    </button>
-                  ) : (
-                    <div style={{opacity:.85, marginBottom:8}}>Waiting to start… (host is Seat 1)</div>
-                  )}
-
-                  {/* Reset Seats button (available in Lobby to clear stuck names) */}
-                  <button onClick={resetAllSeats} style={{...ui.btn, ...ui.btnGray}}>
-                    Reset Seats
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button onClick={drawStock} style={{...ui.btn, ...ui.btnDark, marginRight:8}}>Draw</button>
-                  <button onClick={takeDiscard} style={{...ui.btn, ...ui.btnAmber}}>Pickup</button>
-                </>
-              )}
-            </div>
-
-            <div style={{marginTop:10, fontSize:12, opacity:.9}}>{room.lastAction}</div>
-          </div>
-        </div>
-
-        {/* Hand tray (bottom, sticky) */}
-        <div style={ui.tray}>
-          <div style={ui.trayTitleRow}>
-            <div style={{fontWeight:800}}>{(myP?.name ?? "You")}'s Hand ({(myP?.hand ?? []).length})</div>
-            <div style={ui.textXs}>Drag a card and drop <b>anywhere</b> along the row to reorder</div>
-          </div>
-
-          {/* Your hand: pixel-accurate drop area (one container computes index) */}
-          <div
-            ref={handRef}
-            style={{display:"flex", flexWrap:"wrap", minHeight: 86}}
-            onDragOver={(e)=>{ e.preventDefault(); }}
-            onDrop={(e)=>dropToHandAtPointer(e)}
-          >
-            {(myP?.hand ?? []).map((id)=>(
-              <Card
-                key={id}
-                card={room.deck[id]}
-                selected={stage.includes(id)}
-                onClick={()=>toggleStage(id)}
-                draggable
-                onDragStart={()=>onDragStart(id, "hand", 0)}
-              />
-            ))}
-          </div>
-
-          {/* Staging */}
-          <div style={{marginTop:10, display:"flex", alignItems:"center", justifyContent:"space-between"}}>
-            <div style={{fontWeight:700}}>Staging</div>
-            <div className="actions">
-              <button onClick={clearStage} style={{...ui.btn, ...ui.btnGray}}>Clear Staging</button>
-            </div>
-          </div>
-          <div
-            style={{marginTop:6, display:"flex", flexWrap:"wrap"}}
-            onDragOver={(e)=>{ e.preventDefault(); }}
-            onDrop={()=>dropToStage(null)}
-          >
-            {stage.map((id, idx)=>(
-              <div key={id} onDragOver={(e)=>{ e.preventDefault(); }} onDrop={()=>reorderStage(idx)}>
-                <Card
-                  card={room.deck[id]}
-                  selected
-                  onClick={()=>toggleStage(id)}
-                  draggable
-                  onDragStart={()=>onDragStart(id, "stage", idx)}
-                />
-              </div>
-            ))}
-          </div>
-
-          {/* Lay controls */}
-          <div style={{...ui.actionsRow, marginTop:10}}>
-            <button onClick={()=> stage.length>=3 && layPure("PURE_RUN")} style={{...ui.btn, ...ui.btnBlue}}>Lay Pure Run</button>
-            <button onClick={()=> stage.length>=3 && layPure("PURE_SET")} style={{...ui.btn, ...ui.btnDark}}>Lay Pure Set</button>
-            <button onClick={layTunnela} style={{...ui.btn, ...ui.btnGreen}}>Lay Tunnela (3)</button>
-            <button onClick={()=>layImpureSet(3)} style={{...ui.btn, ...ui.btnAmber}}>Lay Set (impure)</button>
-            <button onClick={endTurn} style={{...ui.btn, ...ui.btnDark}}>End Turn</button>
-            {(myP?.hand ?? []).slice(0,1).map(id => (
-              <button key={id} onClick={()=>discardCard(id)} style={{...ui.btn, ...ui.btnGreen}}>Quick Declare (discard first)</button>
-            ))}
-            {meSeat!=null && (
-              <button onClick={leaveTable} style={{...ui.btn, ...ui.btnGray}}>Leave Table</button>
+    <div style={{ minHeight: "100vh", background: UI.feltDark, color: "white", padding: 20, fontFamily: 'sans-serif' }}>
+      {/* Header */}
+      <div style={{display:'flex', justifyContent:'space-between', marginBottom: 20}}>
+         <h2>Blind Justice Online</h2>
+         <div>
+            {meName ? (
+               <span>Playing as <b>{meName}</b> (Seat {meSeat})</span>
+            ) : (
+                <div style={{display:'flex', gap: 10}}>
+                   <input placeholder="Name" value={meName} onChange={e=>setMeName(e.target.value)} style={{padding:5, borderRadius:4}}/>
+                </div>
             )}
-          </div>
-        </div>
+         </div>
       </div>
+
+      {/* Main Table Area */}
+      <div style={{ position: 'relative', height: 400, background: UI.felt, borderRadius: 20, border: '8px solid #3e2723', boxShadow: 'inset 0 0 50px #000' }}>
+         
+         {/* Center Deck/Piles */}
+         <div style={{position:'absolute', top:'50%', left:'50%', transform:'translate(-50%, -50%)', display:'flex', gap: 20}}>
+            {/* Stock */}
+            <div onClick={()=>handlePickup('STOCK')} style={{width: UI.cardW, height: UI.cardH, background: '#1e293b', border: '2px solid #fff', borderRadius: 6, display:'flex', alignItems:'center', justifyContent:'center', cursor: isMyTurn && !myP.hasPicked ? 'pointer' : 'default'}}>
+               Stock
+            </div>
+            
+            {/* Joker */}
+            <div style={{width: UI.cardW, height: UI.cardH, background: '#fff', borderRadius: 6, color: '#000', display:'flex', alignItems:'center', justifyContent:'center', transform:'rotate(90deg)'}}>
+                {hasRevealed ? `${jokerCard?.rank}${jokerCard?.suit}` : (myP?.melds?.length ? "🔒" : "?")}
+            </div>
+
+            {/* Discard */}
+            <div onClick={()=>handlePickup('DISCARD')} style={{width: UI.cardW, height: UI.cardH, background: '#fff', borderRadius: 6, color: '#000', display:'flex', alignItems:'center', justifyContent:'center', cursor: isMyTurn && !myP.hasPicked ? 'pointer' : 'default'}}>
+                {room.discard?.[room.discard.length-1] ? `${room.discard[room.discard.length-1].rank}${room.discard[room.discard.length-1].suit}` : "Empty"}
+            </div>
+         </div>
+
+         {/* Seats */}
+         {room.players.map((p, i) => {
+             const pos = getSeatPos(i, meSeat); // Helper to rotate table visually
+             return (
+                 <div key={i} style={{position:'absolute', ...pos, width: 150, background: 'rgba(0,0,0,0.5)', padding: 8, borderRadius: 8, border: room.turn===i ? '2px solid #fbbf24' : '1px solid #ffffff44'}}>
+                    {p.name ? (
+                        <>
+                           <div style={{fontWeight:'bold'}}>{p.name} {i === room.winnerIndex && "👑"}</div>
+                           <div style={{fontSize: 12}}>Chips: {p.chips}</div>
+                           <div style={{fontSize: 12}}>Cards: {p.hand?.length || 0}</div>
+                           <div style={{display:'flex', flexWrap:'wrap', gap: 2, marginTop: 4}}>
+                              {p.melds?.map((m, mi) => (
+                                  <div key={mi} style={{background:'#fff', padding:'1px 3px', borderRadius:2, color:'#000', fontSize: 10}}>
+                                      {m.type}
+                                  </div>
+                              ))}
+                           </div>
+                        </>
+                    ) : (
+                        <button onClick={()=>sit(i)} disabled={meSeat !== null}>Sit</button>
+                    )}
+                 </div>
+             );
+         })}
+      </div>
+
+      {/* Logs */}
+      <div style={{height: 60, overflowY:'scroll', background:'rgba(0,0,0,0.3)', marginTop: 10, fontSize: 12, padding: 5}}>
+          {room.logs?.slice().reverse().map((l, i) => <div key={i}>{l}</div>)}
+      </div>
+
+      {/* Player Controls (Bottom) */}
+      {meSeat !== null && (
+         <div style={{marginTop: 20}}>
+            {/* Status Bar */}
+            <div style={{display:'flex', justifyContent:'space-between', marginBottom: 10}}>
+                <div>
+                   Weight: <span style={{color: hasRevealed ? '#4ade80' : '#f87171'}}>{myWeight}</span> 
+                   {hasRevealed ? " (Revealed)" : " (Blind)"}
+                </div>
+                <div>{room.phase === "SETTLE" && "SETTLEMENT PHASE"}</div>
+            </div>
+
+            {/* Hand */}
+            <div style={{display:'flex', flexWrap:'wrap', gap: 8, background: 'rgba(255,255,255,0.05)', padding: 10, borderRadius: 10, minHeight: 100}}>
+               {myP?.hand?.map((c, i) => {
+                   const isSel = stage.some(s => s.id === c.id);
+                   const isWild = hasRevealed && isCardWild(c, jokerCard, myWeight);
+                   return (
+                       <div key={c.id} 
+                            onClick={() => {
+                                if(isSel) setStage(prev => prev.filter(s => s.id !== c.id));
+                                else setStage(prev => [...prev, {id: c.id, card: c}]);
+                            }}
+                            style={{
+                                width: 40, height: 56, background: '#fff', borderRadius: 4, 
+                                color: (c.suit === '♥' || c.suit === '♦') ? 'red' : 'black',
+                                display:'flex', alignItems:'center', justifyContent:'center',
+                                border: isSel ? '3px solid #60a5fa' : isWild ? '2px solid #fbbf24' : '1px solid #ccc',
+                                cursor: 'pointer', position: 'relative'
+                            }}>
+                           {c.rank}{c.suit}
+                           {isWild && <div style={{position:'absolute', top:-4, right:-4}}>⭐</div>}
+                       </div>
+                   );
+               })}
+            </div>
+
+            {/* Buttons */}
+            <div style={{marginTop: 15, display:'flex', gap: 10}}>
+               {(isMyTurn || isMySettle) && (
+                 <>
+                    <button onClick={handleMeld} style={btnStyle}>Meld Selected</button>
+                    <button onClick={() => setBuildMode(!buildMode)} style={btnStyle}>Build {buildMode ? "(ON)" : ""}</button>
+                    {!myP.hasPicked && <button onClick={handleTennala} style={{...btnStyle, background:'#d97706'}}>Tennala</button>}
+                 </>
+               )}
+               
+               {isMyTurn && myP.hasPicked && (
+                   <button onClick={handleDiscard} style={{...btnStyle, background:'#dc2626'}}>Discard & End</button>
+               )}
+
+               {isMySettle && (
+                   <button onClick={handleSettleDone} style={{...btnStyle, background:'#16a34a'}}>Done Settling</button>
+               )}
+            </div>
+
+            {/* Melds (Click to Build) */}
+            <div style={{marginTop: 15, display:'flex', gap: 15, overflowX:'auto'}}>
+                {myP?.melds?.map((m, i) => (
+                    <div key={i} onClick={() => buildMode && handleBuild(i)} style={{background:'#1e293b', padding: 5, borderRadius: 5, border: buildMode ? '2px dashed #a855f7' : 'none', cursor: buildMode ? 'pointer' : 'default'}}>
+                        <div style={{fontSize:10, color:'#94a3b8', marginBottom:2}}>{m.type}</div>
+                        <div style={{display:'flex', gap: 2}}>
+                           {m.cards.map((c, ci) => (
+                               <div key={ci} style={{background:'#fff', width:20, height:28, fontSize:10, display:'flex', alignItems:'center', justifyContent:'center', color: (c.suit === '♥' || c.suit === '♦') ? 'red' : 'black'}}>
+                                   {c.rank}{c.suit}
+                               </div>
+                           ))}
+                        </div>
+                    </div>
+                ))}
+            </div>
+         </div>
+      )}
+
+      {/* Score Modal */}
+      {showScoreModal && (
+          <div style={{position:'fixed', inset:0, background:'rgba(0,0,0,0.9)', display:'flex', alignItems:'center', justifyContent:'center'}}>
+              <div style={{background:'#1e293b', padding: 30, borderRadius: 10, width: 400}}>
+                  <h2 style={{marginTop:0}}>Round Results</h2>
+                  {/* Assuming result logs are stored in logs or separately */}
+                  <div style={{maxHeight: 300, overflowY:'auto', fontSize: 14, marginBottom: 20}}>
+                      {room.logs.filter(l => l.includes("Penalty") || l.includes("Won") || l.includes("Marriage")).map((l, i) => (
+                          <div key={i} style={{marginBottom: 4, borderBottom:'1px solid #334155'}}>{l}</div>
+                      ))}
+                  </div>
+                  <button onClick={dealGame} style={{...btnStyle, width:'100%', background:'#16a34a'}}>Start Next Round</button>
+              </div>
+          </div>
+      )}
+
+      {/* Admin Start (if lobby) */}
+      {room.phase === "LOBBY" && meSeat === 0 && (
+          <button onClick={dealGame} style={{position:'absolute', top: 20, right: 20, padding: "10px 20px", background: '#16a34a', color:'#fff', border:'none', borderRadius: 5, cursor:'pointer'}}>
+              Start Game
+          </button>
+      )}
     </div>
   );
 }
 
-// ------------------------------
-// Small UI bits
-// ------------------------------
-function labelForMeld(type){
-  switch(type){
-    case "PURE_RUN": return "Pure Run";
-    case "PURE_SET": return "Pure Set";
-    case "RUN":      return "Run";
-    case "SET":      return "Set";
-    case "TUNNELA":  return "Tunnela";
-    default:         return type;
-  }
+// Simple positioning helper
+function getSeatPos(seatIdx, meSeat) {
+    // If I am seated, rotate so I am at bottom (index 2 in visual grid)
+    // Map seats 0-4 to Top, Right, Bottom-Right, Bottom-Left, Left
+    // This is a simple absolute positioning map
+    const positions = [
+        { top: 10, left: '50%', transform: 'translateX(-50%)' }, // Top
+        { top: '30%', right: 10 }, // Right
+        { bottom: '15%', right: '20%' }, // Bottom Right
+        { bottom: '15%', left: '20%' }, // Bottom Left
+        { top: '30%', left: 10 }, // Left
+    ];
+    
+    // Rotate logic if needed, for now static
+    return positions[seatIdx] || { top: 0, left: 0 };
 }
-function Card({ card, selected, onClick, draggable=false, onDragStart }) {
-  const isRed = card.suit === "♥" || card.suit === "♦";
-  return (
-    <div style={ui.cardWrap}>
-      <button
-        draggable={draggable}
-        onDragStart={onDragStart}
-        onClick={onClick}
-        style={{
-          ...ui.cardBox,
-          outline: selected ? "2px solid #2563EB" : "none",
-          transform: selected ? "translateY(-1px)" : "none",
-          cursor: (onClick || draggable) ? "pointer" : "default",
-          userSelect: "none"
-        }}
-      >
-        <div style={ui.pS(isRed)}>{card.suit}</div>
-        <div style={{height:4}}/>
-        <div style={ui.pR(isRed)}>{card.rank}</div>
-      </button>
-    </div>
-  );
-}
-function MiniCard({ card }) {
-  const isRed = card.suit === "♥" || card.suit === "♦";
-  return (
-    <div style={{...ui.cardBox, width:34, height:46}}>
-      <div style={{...ui.pS(isRed), fontSize:14}}>{card.suit}</div>
-      <div style={{height:2}}/>
-      <div style={{...ui.pR(isRed), fontSize:9}}>{card.rank}</div>
-    </div>
-  );
-}
-function CardMask(){
-  return (
-    <div style={ui.cardWrap}>
-      <div style={ui.cardBox}>
-        <div style={ui.pS(false)}>?</div>
-        <div style={{height:4}}/>
-        <div style={{ui:ui, ...ui.pR(false)}}>?</div>
-      </div>
-    </div>
-  );
-}
+
+const btnStyle = {
+    padding: "8px 16px",
+    background: "#2563eb",
+    color: "#fff",
+    border: "none",
+    borderRadius: 6,
+    cursor: "pointer",
+    fontWeight: "bold"
+};
