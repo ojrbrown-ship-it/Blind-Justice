@@ -1,5 +1,5 @@
 // src/game/MarriageRummyOnline.jsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getDatabase, ref, set, update, onValue } from "firebase/database";
 
@@ -27,7 +27,6 @@ const SUITS = ["♠", "♣", "♥", "♦"];
 const RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"];
 const getRankIdx = (r) => RANKS.indexOf(r);
 
-// UI Constants
 const UI = {
   felt: "#0f3d2e",
   feltDark: "#062218",
@@ -57,7 +56,8 @@ const getWildSuite = (jokerCard) => {
 
 const isCardWild = (card, jokerCard, playerWeight) => {
   if (!jokerCard || !card) return false;
-  if (playerWeight < 3) return false; // Wilds inactive if blind
+  // Wilds are ONLY active/visible if player has weight >= 3
+  if (playerWeight < 3) return false; 
 
   const ws = getWildSuite(jokerCard);
   if (card.rank === ws.rankWild) return true;
@@ -128,7 +128,7 @@ const validateMeld = (cards, jokerCard, playerWeight, isSettlePhase = false) => 
 };
 
 // ------------------------------
-// Deck & Utils
+// Utils
 // ------------------------------
 function generateDeck(numDecks = 3) {
   let deck = [];
@@ -161,6 +161,9 @@ export default function MarriageRummyOnline() {
   const [buildMode, setBuildMode] = useState(false);
   const [showScoreModal, setShowScoreModal] = useState(false);
   
+  const dragItem = useRef(null);
+  const dragOverItem = useRef(null);
+  
   const ROOM_ID = "global";
 
   useEffect(() => {
@@ -189,15 +192,13 @@ export default function MarriageRummyOnline() {
     });
   };
 
-  // --- RESET BUTTON ACTION ---
   const handleResetTable = async () => {
-    if (!window.confirm("RESET TABLE? This will wipe all progress and chips.")) return;
+    if (!window.confirm("RESET TABLE? This will wipe all progress.")) return;
     await createRoom();
     setStage([]);
     setBuildMode(false);
     setShowScoreModal(false);
   };
-  // ---------------------------
 
   const myP = room?.players?.[meSeat];
   const isMyTurn = room?.phase === "PLAY" && room?.turn === meSeat;
@@ -226,7 +227,7 @@ export default function MarriageRummyOnline() {
     
     const updates = {
       phase: "PLAY", deck: shuffled, discard: discard, jokerCard: joker,
-      turn: activeSeats[0], logs: [`New Game Dealt. Joker is ${joker.rank}${joker.suit}`]
+      turn: activeSeats[0], logs: [`New Game Dealt.`]
     };
 
     room.players.forEach(p => {
@@ -257,6 +258,27 @@ export default function MarriageRummyOnline() {
     await update(ref(db, `rooms/${ROOM_ID}`), updates);
   };
 
+  const handleDragEnd = async () => {
+    if (dragItem.current === null || dragOverItem.current === null) return;
+    const newHand = [...(myP.hand || [])];
+    const dragCard = newHand[dragItem.current];
+    newHand.splice(dragItem.current, 1);
+    newHand.splice(dragOverItem.current, 0, dragCard);
+    dragItem.current = null;
+    dragOverItem.current = null;
+    await update(ref(db, `rooms/${ROOM_ID}/players/${meSeat}/hand`), newHand);
+  };
+
+  const handleSortHand = async () => {
+    if (!myP?.hand) return;
+    const sorted = [...myP.hand].sort((a, b) => {
+      const suitOrder = { "♠": 0, "♣": 1, "♥": 2, "♦": 3 };
+      if (suitOrder[a.suit] !== suitOrder[b.suit]) return suitOrder[a.suit] - suitOrder[b.suit];
+      return getRankIdx(a.rank) - getRankIdx(b.rank);
+    });
+    await update(ref(db, `rooms/${ROOM_ID}/players/${meSeat}/hand`), sorted);
+  };
+
   const handleMeld = async () => {
     if (!stage.length) return;
     const cards = stage.map(s => s.card);
@@ -274,6 +296,9 @@ export default function MarriageRummyOnline() {
       [`players/${meSeat}/melds`]: newMelds,
       [`players/${meSeat}/hasRevealed`]: newWeight >= 3
     };
+    if (newWeight >= 3 && !hasRevealed) {
+        updates['logs'] = [...(room.logs||[]), `${myP.name} unlocked the Joker!`];
+    }
     setStage([]);
     await update(ref(db, `rooms/${ROOM_ID}`), updates);
   };
@@ -413,22 +438,24 @@ export default function MarriageRummyOnline() {
          <h2>Blind Justice Online</h2>
          <div style={{display:'flex', gap: 10, alignItems: 'center'}}>
             <button onClick={handleResetTable} style={{background: '#b91c1c', color: 'white', border: 'none', borderRadius: 4, padding: '5px 10px', cursor: 'pointer', fontWeight: 'bold'}}>RESET TABLE</button>
-            {meName ? (
-               <span>Playing as <b>{meName}</b> (Seat {meSeat})</span>
-            ) : (
+            {!meName && (
                 <div style={{display:'flex', gap: 10}}>
                    <input placeholder="Name" value={meName} onChange={e=>setMeName(e.target.value)} style={{padding:5, borderRadius:4}}/>
                 </div>
             )}
+            {meName && <span>Playing as <b>{meName}</b> (Seat {meSeat})</span>}
          </div>
       </div>
 
       <div style={{ position: 'relative', height: 400, background: UI.felt, borderRadius: 20, border: '8px solid #3e2723', boxShadow: 'inset 0 0 50px #000' }}>
          <div style={{position:'absolute', top:'50%', left:'50%', transform:'translate(-50%, -50%)', display:'flex', gap: 20}}>
             <div onClick={()=>handlePickup('STOCK')} style={{width: UI.cardW, height: UI.cardH, background: '#1e293b', border: '2px solid #fff', borderRadius: 6, display:'flex', alignItems:'center', justifyContent:'center', cursor: isMyTurn && !myP.hasPicked ? 'pointer' : 'default'}}>Stock</div>
-            <div style={{width: UI.cardW, height: UI.cardH, background: '#fff', borderRadius: 6, color: '#000', display:'flex', alignItems:'center', justifyContent:'center', transform:'rotate(90deg)'}}>
-                {hasRevealed ? `${jokerCard?.rank}${jokerCard?.suit}` : (myP?.melds?.length ? "🔒" : "?")}
+            
+            {/* HIDDEN JOKER LOGIC */}
+            <div style={{width: UI.cardW, height: UI.cardH, background: hasRevealed ? '#fff' : '#334155', border: '2px solid gold', borderRadius: 6, color: '#000', display:'flex', alignItems:'center', justifyContent:'center', transform:'rotate(90deg)', fontWeight:'bold'}}>
+                {hasRevealed ? `${jokerCard?.rank}${jokerCard?.suit}` : "🔒"}
             </div>
+
             <div onClick={()=>handlePickup('DISCARD')} style={{width: UI.cardW, height: UI.cardH, background: '#fff', borderRadius: 6, color: '#000', display:'flex', alignItems:'center', justifyContent:'center', cursor: isMyTurn && !myP.hasPicked ? 'pointer' : 'default'}}>
                 {room.discard?.[room.discard.length-1] ? `${room.discard[room.discard.length-1].rank}${room.discard[room.discard.length-1].suit}` : "Empty"}
             </div>
@@ -460,17 +487,28 @@ export default function MarriageRummyOnline() {
       {meSeat !== null && (
          <div style={{marginTop: 20}}>
             <div style={{display:'flex', justifyContent:'space-between', marginBottom: 10}}>
-                <div>Weight: <span style={{color: hasRevealed ? '#4ade80' : '#f87171'}}>{myWeight}</span> {hasRevealed ? " (Revealed)" : " (Blind)"}</div>
+                <div>Weight: <span style={{color: hasRevealed ? '#4ade80' : '#f87171'}}>{myWeight}</span> {hasRevealed ? " (Joker Active)" : " (Blind)"}</div>
                 <div>{room.phase === "SETTLE" && "SETTLEMENT PHASE"}</div>
             </div>
 
             <div style={{display:'flex', flexWrap:'wrap', gap: 8, background: 'rgba(255,255,255,0.05)', padding: 10, borderRadius: 10, minHeight: 100}}>
                {myP?.hand?.map((c, i) => {
                    const isSel = stage.some(s => s.id === c.id);
-                   const isWild = hasRevealed && isCardWild(c, jokerCard, myWeight);
+                   const isWild = isCardWild(c, jokerCard, myWeight);
                    return (
-                       <div key={c.id} onClick={() => { if(isSel) setStage(prev => prev.filter(s => s.id !== c.id)); else setStage(prev => [...prev, {id: c.id, card: c}]); }}
-                            style={{ width: 40, height: 56, background: '#fff', borderRadius: 4, color: (c.suit === '♥' || c.suit === '♦') ? 'red' : 'black', display:'flex', alignItems:'center', justifyContent:'center', border: isSel ? '3px solid #60a5fa' : isWild ? '2px solid #fbbf24' : '1px solid #ccc', cursor: 'pointer', position: 'relative' }}>
+                       <div key={c.id} 
+                            draggable
+                            onDragStart={() => (dragItem.current = i)}
+                            onDragEnter={() => (dragOverItem.current = i)}
+                            onDragEnd={handleDragEnd}
+                            onClick={() => { if(isSel) setStage(prev => prev.filter(s => s.id !== c.id)); else setStage(prev => [...prev, {id: c.id, card: c}]); }}
+                            style={{ 
+                                width: 40, height: 56, background: '#fff', borderRadius: 4, 
+                                color: (c.suit === '♥' || c.suit === '♦') ? 'red' : 'black', 
+                                display:'flex', alignItems:'center', justifyContent:'center', 
+                                border: isSel ? '3px solid #60a5fa' : isWild ? '2px solid #fbbf24' : '1px solid #ccc', 
+                                cursor: 'grab', position: 'relative' 
+                            }}>
                            {c.rank}{c.suit}
                            {isWild && <div style={{position:'absolute', top:-4, right:-4}}>⭐</div>}
                        </div>
@@ -479,6 +517,7 @@ export default function MarriageRummyOnline() {
             </div>
 
             <div style={{marginTop: 15, display:'flex', gap: 10}}>
+               <button onClick={handleSortHand} style={{...btnStyle, background:'#eab308', color: 'black'}}>Sort Hand</button>
                {(isMyTurn || isMySettle) && (
                  <>
                     <button onClick={handleMeld} style={btnStyle}>Meld Selected</button>
