@@ -356,4 +356,4 @@ function createRoom(playersCount = 5){
     stock: [],
     discard: []
   };
-}
+} 
