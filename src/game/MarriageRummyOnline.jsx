@@ -1,11 +1,12 @@
 // src/game/MarriageRummyOnline.jsx
-import React, { useEffect, useMemo, useState, useRef } from "react";
-import { initializeApp, getApps, getApp } from "firebase/app";
-import { getDatabase, ref, set, update, onValue } from "firebase/database";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 // ------------------------------
-// Firebase Config & Init
+// Firebase (Realtime Database)
 // ------------------------------
+import { initializeApp, getApps, getApp } from "firebase/app";
+import { getDatabase, ref, set, update, onValue, get, child } from "firebase/database";
+
 const env = import.meta.env || {};
 const FIREBASE_CONFIG = {
   apiKey:            env.VITE_FIREBASE_API_KEY        || (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.apiKey : undefined),
@@ -17,562 +18,342 @@ const FIREBASE_CONFIG = {
   appId:             env.VITE_FIREBASE_APP_ID          || (typeof window !== "undefined" ? window.__FIREBASE_CONFIG__?.appId : undefined),
 };
 
+if (!FIREBASE_CONFIG.databaseURL || !FIREBASE_CONFIG.projectId) {
+  console.error("[Firebase] Missing databaseURL or projectId.");
+}
+
 const app = getApps().length ? getApp() : initializeApp(FIREBASE_CONFIG);
 const db  = getDatabase(app);
 
 // ------------------------------
-// Assets & Constants
+// Design system + Table styles
 // ------------------------------
-const SUITS = ["♠", "♣", "♥", "♦"];
-const RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"];
-const getRankIdx = (r) => RANKS.indexOf(r);
-
-const UI = {
-  felt: "#0f3d2e",
-  feltDark: "#062218",
-  gold: "#f59e0b",
-  cardW: 56,
-  cardH: 78,
+const FELT = "#135f39";
+const FELT_DARK = "#0e4c2e";
+const ui = {
+  viewport: { minHeight: "100vh", background: "radial-gradient(1000px 600px at 50% -100px, #196a42, #0c3d27)", color: "#0c1b12", fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif" },
+  shell:    { position: "relative", maxWidth: 1280, margin: "0 auto", padding: 16, minHeight: "100vh" },
+  tableWrap:   { position: "relative", margin: "60px auto 220px", width: "100%", maxWidth: 1100, height: 540 },
+  tableSurface:{ position: "absolute", inset: 0, borderRadius: 520, background: `radial-gradient(1200px 600px at 50% 30%, ${FELT}, ${FELT_DARK})`, boxShadow: "0 60px 140px rgba(0,0,0,.45), inset 0 8px 20px rgba(255,255,255,.12), inset 0 -8px 24px rgba(0,0,0,.25)", border: "10px solid #3e2b18", outline: "1px solid rgba(255,255,255,.04)" },
+  seatPlaque:  { position:"absolute", minWidth: 220, padding: "10px 12px", borderRadius: 12, background: "rgba(255,255,255,.09)", backdropFilter: "blur(6px)", border: "1px solid rgba(255,255,255,.12)", color:"#eafff0" },
+  seatTitle:   { fontSize: 14, fontWeight: 700 },
+  seatMeta:    { fontSize: 12, opacity:.9, marginTop: 4 },
+  topSeat:     { top:-36, left:"50%", transform:"translateX(-50%)" },
+  rightTop:    { right:-10, top:"20%", transform:"translateY(-50%)" },
+  rightBottom: { right:-10, top:"70%", transform:"translateY(-50%)" },
+  bottomSeat:  { bottom:-36, left:"50%", transform:"translateX(-50%)" },
+  leftMid:     { left:-10, top:"45%", transform:"translateY(-50%)" },
+  belt:        { display:"flex", flexWrap:"wrap", gap:8, marginTop:8 },
+  tray:        { position:"fixed", left:"50%", bottom: 16, transform:"translateX(-50%)", width:"min(1180px, 96vw)", background:"rgba(255,255,255,.96)", border:"1px solid #e6ece8", borderRadius:16, padding:12, boxShadow:"0 18px 80px rgba(0,0,0,.25)" },
+  trayTitleRow:{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, marginBottom:6 },
+  textXs:      { fontSize: 12, color:"#344e3e" },
+  actionsRow:  { display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" },
+  btn:         { border:"0", borderRadius:10, padding:"10px 14px", fontWeight:700, cursor:"pointer" },
+  btnDark:     { background:"#13251b", color:"#fff" },
+  btnBlue:     { background:"#2563EB", color:"#fff" },
+  btnGreen:    { background:"#059669", color:"#fff" },
+  btnAmber:    { background:"#D97706", color:"#fff" },
+  btnGray:     { background:"#E5E7EB", color:"#0f1f17" },
+  cardWrap:    { display:"inline-flex", flexDirection:"column", alignItems:"center", marginRight:6, marginBottom:6 },
+  cardBox:     { width: 56, height: 76, borderRadius: 10, background:"#fff", border:"1px solid #dbe3dd", boxShadow: "0 2px 8px rgba(16,24,40,.10)", display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column" },
+  pS:(red)=>({ fontSize: 18, lineHeight:"18px", color:red? "#e11d48":"#0f172a" }),
+  pR:(red)=>({ fontSize: 10, lineHeight:"10px", color:red? "#e11d48":"#0f172a" }),
+  pill:       { display:"inline-flex", alignItems:"center", padding:"2px 8px", borderRadius:999, background:"#eef2ff", color:"#3730a3", border:"1px solid #c7d2fe", fontSize:12 },
+  namePanel:  { position:"fixed", left:"50%", top: 28, transform:"translateX(-50%)", background:"rgba(255,255,255,.96)", border:"1px solid #e6ece8", borderRadius:14, padding:"10px 12px", boxShadow:"0 10px 40px rgba(0,0,0,.2)", display:"flex", alignItems:"center", gap:8, zIndex:1000, pointerEvents:"auto" },
+  input:      { border:"1px solid #d1d5db", borderRadius:10, padding:"8px 10px", outline:"none" },
+  mono:       { fontFamily:"ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" }
 };
 
 // ------------------------------
-// Logic: Wilds & Rules
+// Helpers, constants & rules
 // ------------------------------
+const SUITS = ["♠", "♥", "♦", "♣"];
+const RANKS = ["A","2","3","4","5","6","7","8","9","10","J","Q","K"];
+const rankIndex = (r) => RANKS.indexOf(r);
+const suitIndex = (s) => SUITS.indexOf(s);
 
-const getWildSuite = (jokerCard) => {
-  if (!jokerCard) return null;
-  const idx = getRankIdx(jokerCard.rank);
-  const lowRank  = RANKS[(idx - 1 + 13) % 13];
-  const highRank = RANKS[(idx + 1) % 13];
-  
-  return {
-    rankWild: jokerCard.rank,          
-    papluLow: lowRank,                 
-    papluHigh: highRank,               
-    aceWild: "A",                      
-    suit: jokerCard.suit
-  };
-};
+const CARD_W = 56;
+const CARD_G = 6;
+const SLOT_W = CARD_W + CARD_G;
 
-const isCardWild = (card, jokerCard, playerWeight) => {
-  if (!jokerCard || !card) return false;
-  // Wilds are ONLY active/visible if player has weight >= 3
-  if (playerWeight < 3) return false; 
-
-  const ws = getWildSuite(jokerCard);
-  if (card.rank === ws.rankWild) return true;
-  if (card.suit === ws.suit) {
-    if (card.rank === ws.papluLow) return true;
-    if (card.rank === ws.papluHigh) return true;
-    if (card.rank === ws.aceWild) return true;
-  }
-  return false;
-};
-
-const calculateMeldWeight = (melds) => {
-  if (!Array.isArray(melds)) return 0;
-  return melds.reduce((acc, m) => {
-    const len = m.cards.length;
-    if (len >= 9) return acc + 3;
-    if (len >= 6) return acc + 2;
-    if (len >= 3) return acc + 1;
-    return acc;
-  }, 0);
-};
-
-const validateMeld = (cards, jokerCard, playerWeight, isSettlePhase = false) => {
-  const isBlind = playerWeight < 3;
-  const minLen = (isSettlePhase && isBlind) ? 4 : 3;
-
-  if (cards.length < minLen) return { valid: false, error: `Min ${minLen} cards.` };
-
-  const wildCards = cards.filter(c => isCardWild(c, jokerCard, playerWeight));
-  const naturals = cards.filter(c => !isCardWild(c, jokerCard, playerWeight));
-
-  if (naturals.length === 0) return { valid: true, type: "WILD_MELD" };
-
-  // Set Check
-  const firstRank = naturals[0].rank;
-  const isRankSet = naturals.every(c => c.rank === firstRank);
-  if (isRankSet) {
-    if (isBlind) {
-      const firstSuit = naturals[0].suit;
-      if (!naturals.every(c => c.suit === firstSuit)) return { valid: false, error: "Blind: Sets must be Identical." };
-      return { valid: true, type: "IDENTICAL_SET" };
-    } else {
-      const suits = new Set(naturals.map(c => c.suit));
-      if (suits.size !== naturals.length) return { valid: false, error: "Rainbow Set: No duplicate suits." };
-      return { valid: true, type: "SET" };
-    }
-  }
-
-  // Run Check
-  const firstSuit = naturals[0].suit;
-  const isSuitRun = naturals.every(c => c.suit === firstSuit);
-  if (isSuitRun) {
-    const indices = naturals.map(c => getRankIdx(c.rank)).sort((a,b) => a-b);
-    if (new Set(indices).size !== indices.length) return { valid: false, error: "Run: Duplicates found." };
-
-    const span = (indices[indices.length - 1] - indices[0]) + 1;
-    if (span <= cards.length) return { valid: true, type: "RUN" };
-
-    if (indices[0] === 0) {
-      const highIndices = indices.map(i => i === 0 ? 13 : i).sort((a,b)=>a-b);
-      const highSpan = (highIndices[highIndices.length-1] - highIndices[0]) + 1;
-      if (highSpan <= cards.length) return { valid: true, type: "RUN" };
-    }
-    return { valid: false, error: "Run: Gaps too big for Wilds." };
-  }
-
-  return { valid: false, error: "Invalid Combination." };
-};
-
-// ------------------------------
-// Utils
-// ------------------------------
-function generateDeck(numDecks = 3) {
-  let deck = [];
-  for (let d = 0; d < numDecks; d++) {
-    for (let s of SUITS) {
-      for (let r of RANKS) {
-        deck.push({ id: `${d}_${s}_${r}_${Math.random().toString(36).substr(2,5)}`, suit: s, rank: r });
-      }
-    }
-  }
-  return deck;
+function sortHandDefault(deck, handIds) {
+  return [...handIds].sort((aId, bId) => {
+    const a = deck[aId], b = deck[bId];
+    const sc = suitIndex(a.suit) - suitIndex(b.suit);
+    if (sc !== 0) return sc;
+    return rankIndex(a.rank) - rankIndex(b.rank);
+  });
 }
 
-function shuffle(array) {
-  for (let i = array.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [array[i], array[j]] = [array[j], array[i]];
+function shuffle(arr, seed){
+  const a = arr.slice();
+  let s = seed;
+  const rnd = () => (s = (s*1664525 + 1013904223) % 4294967296)/4294967296;
+  for(let i=a.length-1; i>0; i--){ const j = Math.floor(rnd()*(i+1)); [a[i],a[j]] = [a[j],a[i]]; }
+  return a;
+}
+
+function generateDeck(n=3){
+  const out = [];
+  for(let d=0; d<n; d++)
+    for(const suit of SUITS)
+      for(const rank of RANKS)
+        out.push({ id:`${d}-${suit}-${rank}-${Math.random().toString(36).slice(2,8)}`, suit, rank });
+  return out;
+}
+
+const isUpper=(c,h)=> c.suit===h.suit && c.rank===RANKS[(rankIndex(h.rank)+1)%RANKS.length];
+const isLower=(c,h)=> c.suit===h.suit && c.rank===RANKS[(rankIndex(h.rank)-1+RANKS.length)%RANKS.length];
+const isWild =(c,h)=> c.rank===h.rank || isUpper(c,h) || isLower(c,h);
+const roundToNearest10 = (n)=> Math.round(n/10)*10;
+
+const asArray = (v) =>
+  Array.isArray(v) ? v :
+  (v && typeof v === "object") ? Object.values(v) : [];
+
+const countPureMelds = (melds) =>
+  asArray(melds).filter(m => m.type === "PURE_RUN" || m.type === "TUNNELA").length;
+
+function nextActiveSeat(players, start) {
+  if (!Array.isArray(players) || players.length === 0) return 0;
+  let s = start;
+  for (let i = 0; i < players.length; i++) {
+    s = (s + 1) % players.length;
+    if ((players[s]?.name || "").trim()) return s;
   }
-  return array;
+  return 0;
+}
+
+function isSeatActive(p) {
+  return !!((p?.name || "").trim());
 }
 
 // ------------------------------
-// MAIN COMPONENT
+// Component
 // ------------------------------
-export default function MarriageRummyOnline() {
-  const [meName, setMeName] = useState(localStorage.getItem("mr_name") || "");
+export default function MarriageRummyOnline(){
+  const [meName, setMeName] = useState("");
   const [meSeat, setMeSeat] = useState(null);
   const [room, setRoom] = useState(null);
   const [stage, setStage] = useState([]);
-  const [buildMode, setBuildMode] = useState(false);
-  const [showScoreModal, setShowScoreModal] = useState(false);
-  
-  const dragItem = useRef(null);
-  const dragOverItem = useRef(null);
-  
+  const [dragInfo, setDragInfo] = useState(null);
+  const [toast, setToast] = useState("");
+  const handRef = useRef(null);
+
+  useEffect(() => {
+    try { const saved = localStorage.getItem("mr_name"); if (saved) setMeName(saved); } catch (_) {}
+  }, []);
+
   const ROOM_ID = "global";
 
   useEffect(() => {
-    const roomRef = ref(db, `rooms/${ROOM_ID}`);
-    const unsub = onValue(roomRef, (snap) => {
-      const val = snap.val();
-      if (val) setRoom(val);
-      else createRoom();
-    });
-    return () => unsub();
+    (async () => {
+      const snap = await get(child(ref(db), `rooms/${ROOM_ID}`));
+      if (!snap.exists()) {
+        const newRoom = createRoom(5);
+        await set(ref(db, `rooms/${ROOM_ID}`), newRoom);
+      }
+      const unsub = onValue(ref(db, `rooms/${ROOM_ID}`), s => s.val() && setRoom(s.val()));
+      return () => unsub();
+    })();
   }, []);
 
-  useEffect(() => {
-    if (room?.phase === "FINISHED") setShowScoreModal(true);
-    else setShowScoreModal(false);
-  }, [room?.phase]);
+  const playersN = asArray(room?.players);
+  const stockN   = asArray(room?.stock);
+  const discardN = asArray(room?.discard);
+  const currentIdx = Number.isInteger(room?.current) ? room.current : 0;
+  const currentP   = playersN[currentIdx];
+  const myP        = useMemo(()=> playersN[meSeat ?? -1], [playersN, meSeat]);
 
-  const createRoom = async () => {
-    const players = Array.from({length: 5}, (_, i) => ({
-      seat: i, name: "", chips: 250, hand: [], melds: [], 
-      hasPicked: false, hasRevealed: false
-    }));
-    await set(ref(db, `rooms/${ROOM_ID}`), {
-      players, deck: [], discard: [], stock: [], jokerCard: null,
-      turn: 0, phase: "LOBBY", settleIndex: null, winnerIndex: null, logs: []
-    });
-  };
+  function dispatchAction(partial){ if(room) update(ref(db, `rooms/${ROOM_ID}`), partial); }
 
-  const handleResetTable = async () => {
-    if (!window.confirm("RESET TABLE? This will wipe all progress.")) return;
-    await createRoom();
-    setStage([]);
-    setBuildMode(false);
-    setShowScoreModal(false);
-  };
+  function flashToast(msg){
+    setToast(msg);
+    window.clearTimeout(flashToast._t);
+    flashToast._t = window.setTimeout(()=>setToast(""), 1400);
+  }
 
-  const myP = room?.players?.[meSeat];
-  const isMyTurn = room?.phase === "PLAY" && room?.turn === meSeat;
-  const isMySettle = room?.phase === "SETTLE" && room?.settleIndex === meSeat;
-  const jokerCard = room?.jokerCard;
-  const myWeight = useMemo(() => calculateMeldWeight(myP?.melds || []), [myP?.melds]);
-  const hasRevealed = myWeight >= 3;
+  // --- NEW: Hand Sort Handler ---
+  async function handleSortHand() {
+    if (!myP || !room || meSeat === null) return;
+    const sortedHandIds = sortHandDefault(room.deck, myP.hand || []);
+    const nextPlayers = [...playersN];
+    nextPlayers[meSeat] = { ...myP, hand: sortedHandIds };
+    await update(ref(db, `rooms/${ROOM_ID}`), { players: nextPlayers });
+    flashToast("Hand sorted ♠♥");
+  }
 
-  const sit = async (seat) => {
-    if (!meName) return alert("Enter name first");
-    localStorage.setItem("mr_name", meName);
+  // Round/Seat management
+  async function startNewRound() {
+    if (!room) return;
+    const deckArr = generateDeck(3);
+    const deck = Object.fromEntries(deckArr.map(c => [c.id, c]));
+    const seed = Math.floor(Math.random() * 1e9);
+    const order = shuffle(Object.keys(deck), seed);
+    const hiddenJokerId = order[0];
+    const nextPlayers = playersN.map(p => ({ ...p }));
+    const activeIdxs = nextPlayers.map((p, i) => ((p?.name || "").trim() ? i : null)).filter(i => i !== null);
+
+    if (activeIdxs.length === 0) {
+      await update(ref(db, `rooms/${ROOM_ID}`), { phase: "LOBBY", lastAction: "No active seats." });
+      flashToast("Add players first");
+      return;
+    }
+
+    for (let i = 0; i < nextPlayers.length; i++) {
+      nextPlayers[i] = { ...nextPlayers[i], hand: [], melds: [], qualifies: false, hasPeeked: false, hasPicked: false };
+    }
+
+    let stock = order.slice(1);
+    let t = 0;
+    for (let i = 0; i < activeIdxs.length * 21; i++) {
+      nextPlayers[activeIdxs[t]].hand.push(stock[i]);
+      t = (t + 1) % activeIdxs.length;
+    }
+    stock = stock.slice(activeIdxs.length * 21);
+
+    for (const i of activeIdxs) {
+      nextPlayers[i].hand = sortHandDefault(deck, nextPlayers[i].hand);
+    }
+
+    const first = isSeatActive(nextPlayers[room.current]) ? room.current : nextActiveSeat(nextPlayers, room.current - 1);
+    await update(ref(db, `rooms/${ROOM_ID}`), { deck, stock, discard: [], players: nextPlayers, current: first, phase: "PLAY", seed, hiddenJokerId, lastAction: "New round dealt." });
+  }
+
+  async function claimSeat(seat){
+    if (!room) return;
+    const name = (meName || "").trim();
+    if (!name) { flashToast("Enter a name first"); return; }
+    const current = playersN.slice();
+    current[seat] = { ...current[seat], seat, name };
+    await update(ref(db, `rooms/${ROOM_ID}`), { players: current });
     setMeSeat(seat);
-    await update(ref(db, `rooms/${ROOM_ID}/players/${seat}`), { name: meName });
-  };
+    flashToast("Seated ✔");
+  }
 
-  const dealGame = async () => {
-    const rawDeck = generateDeck(3);
-    const shuffled = shuffle(rawDeck);
-    const activeSeats = room.players.filter(p => p.name).map(p => p.seat);
-    if (activeSeats.length < 2) return alert("Need 2+ players");
-
-    const hands = {};
-    activeSeats.forEach(seat => { hands[seat] = shuffled.splice(0, 21); });
-    const joker = shuffled.shift();
-    const discard = [shuffled.shift()];
-    
-    const updates = {
-      phase: "PLAY", deck: shuffled, discard: discard, jokerCard: joker,
-      turn: activeSeats[0], logs: [`New Game Dealt.`]
-    };
-
-    room.players.forEach(p => {
-      updates[`players/${p.seat}/hand`] = hands[p.seat] || [];
-      updates[`players/${p.seat}/melds`] = [];
-      updates[`players/${p.seat}/hasPicked`] = false;
-      updates[`players/${p.seat}/hasRevealed`] = false;
-    });
-
-    await update(ref(db, `rooms/${ROOM_ID}`), updates);
-  };
-
-  const handlePickup = async (source) => {
-    if (!isMyTurn || myP.hasPicked) return;
-    let card;
-    let updates = {};
-    if (source === "STOCK") {
-      card = room.deck[0];
-      updates["deck"] = room.deck.slice(1);
-    } else {
-      card = room.discard[room.discard.length - 1];
-      updates["discard"] = room.discard.slice(0, -1);
+  async function saveName(){
+    const name = (meName || "").trim();
+    try { localStorage.setItem("mr_name", name); } catch (_) {}
+    if (meSeat !== null) {
+      await update(ref(db, `rooms/${ROOM_ID}/players/${meSeat}`), { name: name || `Player ${meSeat+1}` });
+      flashToast("Saved ✔");
     }
-    const newHand = [...(myP.hand || []), card];
-    updates[`players/${meSeat}/hand`] = newHand;
-    updates[`players/${meSeat}/hasPicked`] = true;
-    updates[`logs`] = [...(room.logs || []).slice(-4), `${myP.name} picked from ${source}`];
-    await update(ref(db, `rooms/${ROOM_ID}`), updates);
-  };
+  }
 
-  const handleDragEnd = async () => {
-    if (dragItem.current === null || dragOverItem.current === null) return;
-    const newHand = [...(myP.hand || [])];
-    const dragCard = newHand[dragItem.current];
-    newHand.splice(dragItem.current, 1);
-    newHand.splice(dragOverItem.current, 0, dragCard);
-    dragItem.current = null;
-    dragOverItem.current = null;
-    await update(ref(db, `rooms/${ROOM_ID}/players/${meSeat}/hand`), newHand);
-  };
+  // Turn Logic
+  function drawStock(){
+    if(!room || meSeat!==currentIdx || stockN.length===0) return;
+    const nextStock = stockN.slice(); const cardId = nextStock.shift();
+    const nextPlayers = playersN.slice();
+    nextPlayers[currentIdx] = { ...myP, hasPicked:true, hand:[...(myP.hand||[]), cardId] };
+    dispatchAction({ stock: nextStock, players: nextPlayers, lastAction: `${myP.name} drew.` });
+  }
 
-  const handleSortHand = async () => {
-    if (!myP?.hand) return;
-    const sorted = [...myP.hand].sort((a, b) => {
-      const suitOrder = { "♠": 0, "♣": 1, "♥": 2, "♦": 3 };
-      if (suitOrder[a.suit] !== suitOrder[b.suit]) return suitOrder[a.suit] - suitOrder[b.suit];
-      return getRankIdx(a.rank) - getRankIdx(b.rank);
-    });
-    await update(ref(db, `rooms/${ROOM_ID}/players/${meSeat}/hand`), sorted);
-  };
+  function takeDiscard(){
+    if(!room || meSeat!==currentIdx || discardN.length===0) return;
+    const nextDiscard = discardN.slice(); const cardId = nextDiscard.pop();
+    const nextPlayers = playersN.slice();
+    nextPlayers[currentIdx] = { ...myP, hasPicked:true, hand:[...(myP.hand||[]), cardId] };
+    dispatchAction({ discard: nextDiscard, players: nextPlayers, lastAction: `${myP.name} took discard.` });
+  }
 
-  const handleMeld = async () => {
-    if (!stage.length) return;
-    const cards = stage.map(s => s.card);
-    const isSettle = room.phase === "SETTLE";
-    const res = validateMeld(cards, jokerCard, myWeight, isSettle);
-    if (!res.valid) return alert(res.error);
+  function discardCard(cardId){
+    if(!room || meSeat!==currentIdx) return;
+    const nextPlayers = playersN.slice();
+    const newHand = (myP.hand||[]).filter(id=>id!==cardId);
+    nextPlayers[currentIdx] = { ...myP, hand:newHand, hasPicked: false };
+    const nextTurn = nextActiveSeat(playersN, currentIdx);
+    dispatchAction({ players: nextPlayers, discard:[...discardN, cardId], current: nextTurn, lastAction: `${myP.name} discarded.` });
+  }
 
-    const newMeld = { type: res.type, cards: cards };
-    const newHand = myP.hand.filter(c => !stage.some(s => s.id === c.id));
-    const newMelds = [...(myP.melds || []), newMeld];
-    const newWeight = calculateMeldWeight(newMelds);
-    
-    const updates = {
-      [`players/${meSeat}/hand`]: newHand,
-      [`players/${meSeat}/melds`]: newMelds,
-      [`players/${meSeat}/hasRevealed`]: newWeight >= 3
-    };
-    if (newWeight >= 3 && !hasRevealed) {
-        updates['logs'] = [...(room.logs||[]), `${myP.name} unlocked the Joker!`];
-    }
-    setStage([]);
-    await update(ref(db, `rooms/${ROOM_ID}`), updates);
-  };
+  function toggleStage(cardId){
+    setStage(prev => prev.includes(cardId) ? prev.filter(id => id!==cardId) : [...prev, cardId]);
+  }
 
-  const handleBuild = async (meldIdx) => {
-    if (!stage.length) return;
-    if (room.phase === "SETTLE" && myWeight < 3) return alert("Must unlock Joker (Weight 3) to build.");
-    const targetMeld = myP.melds[meldIdx];
-    const newCards = [...targetMeld.cards, ...stage.map(s => s.card)];
-    const res = validateMeld(newCards, jokerCard, myWeight, room.phase === "SETTLE");
-    if (!res.valid) return alert(`Build Invalid: ${res.error}`);
-
-    const newHand = myP.hand.filter(c => !stage.some(s => s.id === c.id));
-    const updatedMelds = [...myP.melds];
-    updatedMelds[meldIdx] = { ...targetMeld, cards: newCards, type: res.type };
-
-    const updates = { [`players/${meSeat}/hand`]: newHand, [`players/${meSeat}/melds`]: updatedMelds };
-    setStage([]);
-    setBuildMode(false);
-    await update(ref(db, `rooms/${ROOM_ID}`), updates);
-  };
-
-  const handleTennala = async () => {
-    if (myP.hasPicked) return alert("Only before pickup!");
-    if (stage.length !== 3) return alert("Select 3 cards");
-    const c1 = stage[0].card;
-    if (!stage.every(s => s.card.rank === c1.rank && s.card.suit === c1.suit)) return alert("Must be 3 Identical Cards");
-
-    const newMeld = { type: "TENNALA", cards: stage.map(s => s.card) };
-    const newHand = myP.hand.filter(c => !stage.some(s => s.id === c.id));
-    const updates = {
-      [`players/${meSeat}/hand`]: newHand,
-      [`players/${meSeat}/melds`]: [...(myP.melds || []), newMeld],
-      [`logs`]: [...(room.logs||[]), `${myP.name} declared Tennala!`]
-    };
-    setStage([]);
-    await update(ref(db, `rooms/${ROOM_ID}`), updates);
-  };
-
-  const handleDiscard = async () => {
-    if (!isMyTurn || !myP.hasPicked || stage.length !== 1) return alert("Select 1 card to discard");
-    const card = stage[0].card;
-    const newHand = myP.hand.filter(c => c.id !== card.id);
-    const newDiscard = [...room.discard, card];
-
-    if (newHand.length === 0) {
-      const nextSeat = getNextActiveSeat(meSeat);
-      await update(ref(db, `rooms/${ROOM_ID}`), {
-        phase: "SETTLE", winnerIndex: meSeat, settleIndex: nextSeat,
-        [`players/${meSeat}/hand`]: newHand, discard: newDiscard,
-        logs: [...(room.logs||[]), `${myP.name} WINS! Settle Phase Started.`]
-      });
-    } else {
-      const nextSeat = getNextActiveSeat(meSeat);
-      await update(ref(db, `rooms/${ROOM_ID}`), {
-        turn: nextSeat, [`players/${meSeat}/hand`]: newHand,
-        [`players/${meSeat}/hasPicked`]: false, discard: newDiscard
-      });
-    }
-    setStage([]);
-  };
-
-  const handleSettleDone = async () => {
-    if (!isMySettle) return;
-    let nextSeat = getNextActiveSeat(meSeat);
-    if (nextSeat === room.winnerIndex) finalizeScores();
-    else await update(ref(db, `rooms/${ROOM_ID}`), { settleIndex: nextSeat });
-  };
-
-  const finalizeScores = async () => {
-    const players = room.players;
-    const winner = room.winnerIndex;
-    const ws = getWildSuite(room.jokerCard);
-    let transfers = Array(5).fill(0);
-    let logs = [];
-
-    players.forEach(p => {
-      if (!p.name) return;
-      const allCards = [...(p.hand||[]), ...(p.melds||[]).flatMap(m=>m.cards)];
-      const hasLow = allCards.some(c => c.rank === ws.papluLow && c.suit === ws.suit);
-      const hasRank = allCards.some(c => c.rank === ws.rankWild && c.suit === ws.suit);
-      const hasHigh = allCards.some(c => c.rank === ws.papluHigh && c.suit === ws.suit);
-      const hasAce = allCards.some(c => c.rank === ws.aceWild && c.suit === ws.suit);
-
-      let gainPerOpp = 0;
-      if (hasLow && hasRank && hasHigh) { gainPerOpp += 25; logs.push(`${p.name}: Marriage (+25)`); }
-      else {
-        if (hasLow) { gainPerOpp += 5; logs.push(`${p.name}: Low Paplu (+5)`); }
-        if (hasRank) { gainPerOpp += 5; logs.push(`${p.name}: Rank Wild (+5)`); }
-        if (hasHigh) { gainPerOpp += 5; logs.push(`${p.name}: High Paplu (+5)`); }
-      }
-      if (ws.rankWild !== "A" && hasAce) { gainPerOpp += 5; logs.push(`${p.name}: Ace Wild (+5)`); }
-
-      if (gainPerOpp > 0) {
-        const activeCount = players.filter(pl=>pl.name).length;
-        const totalGain = gainPerOpp * (activeCount - 1);
-        transfers[p.seat] += totalGain;
-        players.forEach(opp => { if (opp.seat !== p.seat && opp.name) transfers[opp.seat] -= gainPerOpp; });
-      }
-    });
-
-    let totalPot = 0;
-    players.forEach(p => {
-      if (!p.name || p.seat === winner) return;
-      const deadwood = p.hand || [];
-      const value = deadwood.reduce((acc, c) => {
-        if (isCardWild(c, room.jokerCard, 3)) return acc;
-        const v = ["10","J","Q","K","A"].includes(c.rank) ? 10 : parseInt(c.rank);
-        return acc + v;
-      }, 0);
-      let chips = Math.round(value / 10) * 2;
-      if (value >= 96) chips = 25;
-      transfers[p.seat] -= chips;
-      totalPot += chips;
-      logs.push(`${p.name}: Penalty -${chips} (Hand: ${value})`);
-    });
-
-    transfers[winner] += totalPot;
-    logs.push(`${players[winner].name}: Won Pot +${totalPot}`);
-
-    const updates = { phase: "FINISHED", logs: logs, results: transfers };
-    players.forEach(p => { if(p.name) updates[`players/${p.seat}/chips`] = (p.chips || 0) + transfers[p.seat]; });
-    await update(ref(db, `rooms/${ROOM_ID}`), updates);
-  };
-
-  const getNextActiveSeat = (current) => {
-    let next = (current + 1) % 5;
-    while (!room.players[next].name) next = (next + 1) % 5;
-    return next;
-  };
-
-  if (!room) return <div style={{color:'#fff'}}>Loading...</div>;
+  // Render
+  if(!room) return <div style={ui.viewport}><div style={ui.shell}>Loading...</div></div>;
 
   return (
-    <div style={{ minHeight: "100vh", background: UI.feltDark, color: "white", padding: 20, fontFamily: 'sans-serif' }}>
-      <div style={{display:'flex', justifyContent:'space-between', marginBottom: 20}}>
-         <h2>Blind Justice Online</h2>
-         <div style={{display:'flex', gap: 10, alignItems: 'center'}}>
-            <button onClick={handleResetTable} style={{background: '#b91c1c', color: 'white', border: 'none', borderRadius: 4, padding: '5px 10px', cursor: 'pointer', fontWeight: 'bold'}}>RESET TABLE</button>
-            {!meName && (
-                <div style={{display:'flex', gap: 10}}>
-                   <input placeholder="Name" value={meName} onChange={e=>setMeName(e.target.value)} style={{padding:5, borderRadius:4}}/>
-                </div>
-            )}
-            {meName && <span>Playing as <b>{meName}</b> (Seat {meSeat})</span>}
-         </div>
-      </div>
+    <div style={ui.viewport}>
+      <form style={ui.namePanel} onSubmit={(e)=>{ e.preventDefault(); saveName(); }}>
+        <input style={ui.input} placeholder="Name" value={meName} onChange={e=>setMeName(e.target.value)} />
+        <button type="submit" style={{...ui.btn, ...ui.btnGreen}}>Save</button>
+        {toast && <span style={{marginLeft:8, fontSize:12}}>{toast}</span>}
+      </form>
 
-      <div style={{ position: 'relative', height: 400, background: UI.felt, borderRadius: 20, border: '8px solid #3e2723', boxShadow: 'inset 0 0 50px #000' }}>
-         <div style={{position:'absolute', top:'50%', left:'50%', transform:'translate(-50%, -50%)', display:'flex', gap: 20}}>
-            <div onClick={()=>handlePickup('STOCK')} style={{width: UI.cardW, height: UI.cardH, background: '#1e293b', border: '2px solid #fff', borderRadius: 6, display:'flex', alignItems:'center', justifyContent:'center', cursor: isMyTurn && !myP.hasPicked ? 'pointer' : 'default'}}>Stock</div>
-            
-            {/* HIDDEN JOKER LOGIC */}
-            <div style={{width: UI.cardW, height: UI.cardH, background: hasRevealed ? '#fff' : '#334155', border: '2px solid gold', borderRadius: 6, color: '#000', display:'flex', alignItems:'center', justifyContent:'center', transform:'rotate(90deg)', fontWeight:'bold'}}>
-                {hasRevealed ? `${jokerCard?.rank}${jokerCard?.suit}` : "🔒"}
+      <div style={ui.shell}>
+        <div style={ui.tableWrap}>
+          <div style={ui.tableSurface} />
+          {playersN.map((p, idx) => (
+            <div key={idx} style={{...ui.seatPlaque, ...seatPos(idx)}}>
+              <div style={ui.seatTitle}>{p.name || `Seat ${idx+1}`} {idx===room.current && "• turn"}</div>
+              <div style={ui.seatMeta}>Hand: {(p.hand||[]).length} | Chips: {p.chips}</div>
+              {meSeat === null && !p.name && <button onClick={()=>claimSeat(idx)} style={{...ui.btn, ...ui.btnBlue, marginTop:8}}>Sit</button>}
             </div>
+          ))}
 
-            <div onClick={()=>handlePickup('DISCARD')} style={{width: UI.cardW, height: UI.cardH, background: '#fff', borderRadius: 6, color: '#000', display:'flex', alignItems:'center', justifyContent:'center', cursor: isMyTurn && !myP.hasPicked ? 'pointer' : 'default'}}>
-                {room.discard?.[room.discard.length-1] ? `${room.discard[room.discard.length-1].rank}${room.discard[room.discard.length-1].suit}` : "Empty"}
-            </div>
-         </div>
-
-         {room.players.map((p, i) => {
-             const pos = getSeatPos(i, meSeat);
-             return (
-                 <div key={i} style={{position:'absolute', ...pos, width: 150, background: 'rgba(0,0,0,0.5)', padding: 8, borderRadius: 8, border: room.turn===i ? '2px solid #fbbf24' : '1px solid #ffffff44'}}>
-                    {p.name ? (
-                        <>
-                           <div style={{fontWeight:'bold'}}>{p.name} {i === room.winnerIndex && "👑"}</div>
-                           <div style={{fontSize: 12}}>Chips: {p.chips}</div>
-                           <div style={{fontSize: 12}}>Cards: {p.hand?.length || 0}</div>
-                           <div style={{display:'flex', flexWrap:'wrap', gap: 2, marginTop: 4}}>
-                              {p.melds?.map((m, mi) => ( <div key={mi} style={{background:'#fff', padding:'1px 3px', borderRadius:2, color:'#000', fontSize: 10}}>{m.type}</div> ))}
-                           </div>
-                        </>
-                    ) : ( <button onClick={()=>sit(i)} disabled={meSeat !== null}>Sit</button> )}
-                 </div>
-             );
-         })}
-      </div>
-
-      <div style={{height: 60, overflowY:'scroll', background:'rgba(0,0,0,0.3)', marginTop: 10, fontSize: 12, padding: 5}}>
-          {room.logs?.slice().reverse().map((l, i) => <div key={i}>{l}</div>)}
-      </div>
-
-      {meSeat !== null && (
-         <div style={{marginTop: 20}}>
-            <div style={{display:'flex', justifyContent:'space-between', marginBottom: 10}}>
-                <div>Weight: <span style={{color: hasRevealed ? '#4ade80' : '#f87171'}}>{myWeight}</span> {hasRevealed ? " (Joker Active)" : " (Blind)"}</div>
-                <div>{room.phase === "SETTLE" && "SETTLEMENT PHASE"}</div>
-            </div>
-
-            <div style={{display:'flex', flexWrap:'wrap', gap: 8, background: 'rgba(255,255,255,0.05)', padding: 10, borderRadius: 10, minHeight: 100}}>
-               {myP?.hand?.map((c, i) => {
-                   const isSel = stage.some(s => s.id === c.id);
-                   const isWild = isCardWild(c, jokerCard, myWeight);
-                   return (
-                       <div key={c.id} 
-                            draggable
-                            onDragStart={() => (dragItem.current = i)}
-                            onDragEnter={() => (dragOverItem.current = i)}
-                            onDragEnd={handleDragEnd}
-                            onClick={() => { if(isSel) setStage(prev => prev.filter(s => s.id !== c.id)); else setStage(prev => [...prev, {id: c.id, card: c}]); }}
-                            style={{ 
-                                width: 40, height: 56, background: '#fff', borderRadius: 4, 
-                                color: (c.suit === '♥' || c.suit === '♦') ? 'red' : 'black', 
-                                display:'flex', alignItems:'center', justifyContent:'center', 
-                                border: isSel ? '3px solid #60a5fa' : isWild ? '2px solid #fbbf24' : '1px solid #ccc', 
-                                cursor: 'grab', position: 'relative' 
-                            }}>
-                           {c.rank}{c.suit}
-                           {isWild && <div style={{position:'absolute', top:-4, right:-4}}>⭐</div>}
-                       </div>
-                   );
-               })}
-            </div>
-
-            <div style={{marginTop: 15, display:'flex', gap: 10}}>
-               <button onClick={handleSortHand} style={{...btnStyle, background:'#eab308', color: 'black'}}>Sort Hand</button>
-               {(isMyTurn || isMySettle) && (
-                 <>
-                    <button onClick={handleMeld} style={btnStyle}>Meld Selected</button>
-                    <button onClick={() => setBuildMode(!buildMode)} style={btnStyle}>Build {buildMode ? "(ON)" : ""}</button>
-                    {!myP.hasPicked && <button onClick={handleTennala} style={{...btnStyle, background:'#d97706'}}>Tennala</button>}
-                 </>
-               )}
-               {isMyTurn && myP.hasPicked && ( <button onClick={handleDiscard} style={{...btnStyle, background:'#dc2626'}}>Discard & End</button> )}
-               {isMySettle && ( <button onClick={handleSettleDone} style={{...btnStyle, background:'#16a34a'}}>Done Settling</button> )}
-            </div>
-
-            <div style={{marginTop: 15, display:'flex', gap: 15, overflowX:'auto'}}>
-                {myP?.melds?.map((m, i) => (
-                    <div key={i} onClick={() => buildMode && handleBuild(i)} style={{background:'#1e293b', padding: 5, borderRadius: 5, border: buildMode ? '2px dashed #a855f7' : 'none', cursor: buildMode ? 'pointer' : 'default'}}>
-                        <div style={{fontSize:10, color:'#94a3b8', marginBottom:2}}>{m.type}</div>
-                        <div style={{display:'flex', gap: 2}}>
-                           {m.cards.map((c, ci) => ( <div key={ci} style={{background:'#fff', width:20, height:28, fontSize:10, display:'flex', alignItems:'center', justifyContent:'center', color: (c.suit === '♥' || c.suit === '♦') ? 'red' : 'black'}}>{c.rank}{c.suit}</div> ))}
-                        </div>
-                    </div>
-                ))}
-            </div>
-         </div>
-      )}
-
-      {showScoreModal && (
-          <div style={{position:'fixed', inset:0, background:'rgba(0,0,0,0.9)', display:'flex', alignItems:'center', justifyContent:'center'}}>
-              <div style={{background:'#1e293b', padding: 30, borderRadius: 10, width: 400}}>
-                  <h2 style={{marginTop:0}}>Round Results</h2>
-                  <div style={{maxHeight: 300, overflowY:'auto', fontSize: 14, marginBottom: 20}}>
-                      {room.logs.filter(l => l.includes("Penalty") || l.includes("Won") || l.includes("Marriage")).map((l, i) => ( <div key={i} style={{marginBottom: 4, borderBottom:'1px solid #334155'}}>{l}</div> ))}
-                  </div>
-                  <button onClick={dealGame} style={{...btnStyle, width:'100%', background:'#16a34a'}}>Start Next Round</button>
+          <div style={{position:"absolute", left:"50%", top:"50%", transform:"translate(-50%,-50%)", textAlign:"center", color:"#fff"}}>
+            {room.phase === "LOBBY" ? (
+              <button onClick={startNewRound} style={{...ui.btn, ...ui.btnGreen}}>Start Round</button>
+            ) : (
+              <div style={{display:"flex", gap:10}}>
+                <button onClick={drawStock} style={{...ui.btn, ...ui.btnDark}}>Stock ({stockN.length})</button>
+                <button onClick={takeDiscard} style={{...ui.btn, ...ui.btnAmber}}>Discard ({discardN.length})</button>
               </div>
+            )}
+            <div style={{marginTop:10, fontSize:12}}>{room.lastAction}</div>
           </div>
-      )}
+        </div>
 
-      {room.phase === "LOBBY" && meSeat === 0 && (
-          <button onClick={dealGame} style={{position:'absolute', top: 20, right: 20, padding: "10px 20px", background: '#16a34a', color:'#fff', border:'none', borderRadius: 5, cursor:'pointer'}}>Start Game</button>
-      )}
+        <div style={ui.tray}>
+          <div style={ui.trayTitleRow}>
+            <div style={{fontWeight:800}}>{myP?.name || "Your Hand"} ({(myP?.hand || []).length})</div>
+            <button onClick={handleSortHand} style={{...ui.btn, ...ui.btnAmber}}>Sort Hand</button>
+          </div>
+
+          <div style={{display:"flex", flexWrap:"wrap", minHeight: 86}}>
+            {(myP?.hand || []).map(id => (
+              <Card key={id} card={room.deck[id]} selected={stage.includes(id)} onClick={()=>toggleStage(id)} />
+            ))}
+          </div>
+
+          <div style={{...ui.actionsRow, marginTop:10}}>
+            {stage.length === 1 && meSeat === currentIdx && myP?.hasPicked && (
+              <button onClick={()=>discardCard(stage[0])} style={{...ui.btn, ...ui.btnGreen}}>Discard Selected</button>
+            )}
+            <button onClick={()=>setStage([])} style={{...ui.btn, ...ui.btnGray}}>Clear Selection</button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
-function getSeatPos(seatIdx, meSeat) {
-    const positions = [
-        { top: 10, left: '50%', transform: 'translateX(-50%)' }, 
-        { top: '30%', right: 10 }, 
-        { bottom: '15%', right: '20%' }, 
-        { bottom: '15%', left: '20%' }, 
-        { top: '30%', left: 10 }, 
-    ];
-    if (meSeat === null) return positions[seatIdx];
-    const offset = seatIdx - meSeat; 
-    const finalIdx = (offset + 5 + 2) % 5; 
-    return positions[finalIdx];
+function seatPos(idx) {
+  const pos = [ui.topSeat, ui.rightTop, ui.rightBottom, ui.bottomSeat, ui.leftMid];
+  return pos[idx % 5];
 }
 
-const btnStyle = { padding: "8px 16px", background: "#2563eb", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontWeight: "bold" };
+function Card({ card, selected, onClick }) {
+  const isRed = card.suit === "♥" || card.suit === "♦";
+  return (
+    <div style={ui.cardWrap} onClick={onClick}>
+      <div style={{...ui.cardBox, outline: selected ? "2px solid #2563EB" : "none"}}>
+        <div style={ui.pS(isRed)}>{card.suit}</div>
+        <div style={ui.pR(isRed)}>{card.rank}</div>
+      </div>
+    </div>
+  );
+}
+
+function createRoom(playersCount = 5){
+  return {
+    players: Array.from({length: playersCount}).map((_,i)=>({ id: i, name: "", hand: [], melds: [], chips: 250, seat: i })),
+    current: 0,
+    phase: "LOBBY",
+    lastAction: "Waiting for players...",
+    deck: {},
+    stock: [],
+    discard: []
+  };
+}
