@@ -33,23 +33,18 @@ const UI = {
   feltDark: "#0e4c2e",
   gold: "#f59e0b",
   text: "#ecfdf5",
-  cardW: 50,
-  cardH: 70,
 };
 
 // ------------------------------
 // 3. Logic Helpers
 // ------------------------------
 
-// Sorts an array of Card IDs by looking them up in the master deck
 function sortHandIds(deck, handIds) {
   if (!deck || !handIds) return [];
   return [...handIds].sort((aId, bId) => {
     const cA = deck[aId];
     const cB = deck[bId];
     if (!cA || !cB) return 0;
-    
-    // Sort by Suit first, then Rank
     if (cA.suit !== cB.suit) return getSuitIdx(cA.suit) - getSuitIdx(cB.suit);
     return getRankIdx(cA.rank) - getRankIdx(cB.rank);
   });
@@ -78,13 +73,9 @@ function getWildSuite(jokerCard) {
   };
 }
 
-// Checks if a card is wild, BUT ONLY if the player has unlocked the joker (weight >= 3)
 function isCardWild(card, jokerCard, playerWeight) {
   if (!jokerCard || !card) return false;
-  
-  // RULE: Wilds are inactive/invisible if weight < 3
-  if (playerWeight < 3) return false;
-
+  if (playerWeight < 3) return false; // Wilds inactive if blind
   const ws = getWildSuite(jokerCard);
   if (card.rank === ws.rankWild) return true;
   if (card.suit === ws.suit) {
@@ -104,7 +95,7 @@ export default function MarriageRummyOnline() {
   const [room, setRoom] = useState(null);
   
   // Selection / UI State
-  const [stage, setStage] = useState([]); // Array of Card IDs
+  const [stage, setStage] = useState([]); 
   const [dragItem, setDragItem] = useState(null);
 
   const ROOM_ID = "global";
@@ -131,14 +122,16 @@ export default function MarriageRummyOnline() {
     });
   };
 
+  const handleResetTable = async () => {
+    if(!confirm("Reset table to Lobby?")) return;
+    await createRoom();
+  };
+
   // --- Derived State ---
   const myP = room?.players?.[meSeat];
   const isMyTurn = room?.phase === "PLAY" && room?.turn === meSeat;
   const myWeight = useMemo(() => calculateMeldWeight(myP?.melds || []), [myP?.melds]);
-  
-  // RULE: Joker is only visible if weight >= 3
   const jokerRevealed = myWeight >= 3;
-  
   const jokerCard = room?.deck?.[room?.jokerCardId];
 
   // --- Actions ---
@@ -151,8 +144,8 @@ export default function MarriageRummyOnline() {
   };
 
   const handleStartGame = async () => {
+    // 1. Create Deck
     const deckArr = [];
-    // Generate 3 decks
     for(let d=0; d<3; d++) {
       for(let s of SUITS) {
         for(let r of RANKS) {
@@ -169,17 +162,21 @@ export default function MarriageRummyOnline() {
     const deckMap = {};
     deckArr.forEach(c => deckMap[c.id] = c);
 
+    // 2. Assign Hands
     const activeSeats = room.players.filter(p => p.name).map(p => p.seat);
-    if(activeSeats.length < 2) return alert("Need 2+ players");
+    // Modified: Allow 1 player for testing
+    if(activeSeats.length < 1) return alert("Need at least 1 seated player");
 
     const updates = {};
     updates[`rooms/${ROOM_ID}/deck`] = deckMap;
     
-    // Distribute
     let ptr = 0;
     activeSeats.forEach(seat => {
-        const handIds = deckArr.slice(ptr, ptr+21).map(c=>c.id);
-        updates[`rooms/${ROOM_ID}/players/${seat}/hand`] = handIds;
+        // Sort hand immediately upon deal
+        const rawHand = deckArr.slice(ptr, ptr+21).map(c=>c.id);
+        const sortedHand = sortHandIds(deckMap, rawHand);
+        
+        updates[`rooms/${ROOM_ID}/players/${seat}/hand`] = sortedHand;
         updates[`rooms/${ROOM_ID}/players/${seat}/melds`] = [];
         updates[`rooms/${ROOM_ID}/players/${seat}/hasPicked`] = false;
         ptr += 21;
@@ -201,17 +198,10 @@ export default function MarriageRummyOnline() {
     await update(ref(db), updates);
   };
 
-  // --- FIXED SORT HAND ---
   const handleSortHand = async () => {
     if (!myP || !myP.hand || !room.deck) return;
-
-    // 1. Sort locally using the deck map
     const sortedIds = sortHandIds(room.deck, myP.hand);
-
-    // 2. Push result to Firebase
-    await update(ref(db, `rooms/${ROOM_ID}/players/${meSeat}`), {
-        hand: sortedIds
-    });
+    await update(ref(db, `rooms/${ROOM_ID}/players/${meSeat}`), { hand: sortedIds });
   };
 
   const handlePickup = async (source) => {
@@ -245,7 +235,7 @@ export default function MarriageRummyOnline() {
     const newHand = myP.hand.filter(id => id !== cardId);
     const newDiscard = [...(room.discard||[]), cardId];
     
-    // Pass turn
+    // Simple Next Turn Logic (Round Robin)
     let nextSeat = (meSeat + 1) % 5;
     while (!room.players[nextSeat].name) nextSeat = (nextSeat + 1) % 5;
 
@@ -262,25 +252,16 @@ export default function MarriageRummyOnline() {
   };
 
   // --- Drag & Drop ---
-  const onDragStart = (e, index) => {
-    setDragItem(index);
-  };
-  
-  const onDragEnter = (e, index) => {
-    e.preventDefault();
-  };
-
+  const onDragStart = (e, index) => { setDragItem(index); };
+  const onDragEnter = (e, index) => { e.preventDefault(); };
   const onDrop = async (e, dropIndex) => {
     if (dragItem === null) return;
     const newHand = [...myP.hand];
     const item = newHand.splice(dragItem, 1)[0];
     newHand.splice(dropIndex, 0, item);
-    
     setDragItem(null);
-    // Optimistic update locally? Better to just push to DB
     await update(ref(db, `rooms/${ROOM_ID}/players/${meSeat}`), { hand: newHand });
   };
-
 
   if (!room) return <div style={{padding:20, color:'#fff'}}>Loading...</div>;
 
@@ -288,17 +269,21 @@ export default function MarriageRummyOnline() {
     <div style={{ minHeight: "100vh", background: UI.feltDark, color: UI.text, fontFamily: 'sans-serif', overflowX:'hidden' }}>
       
       {/* HEADER */}
-      <div style={{padding: 15, background: 'rgba(0,0,0,0.3)', display:'flex', justifyContent:'space-between'}}>
+      <div style={{padding: 15, background: 'rgba(0,0,0,0.3)', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
          <div>
-            <h2 style={{margin:0}}>Blind Justice</h2>
-            <small>Room: {ROOM_ID}</small>
+            <h2 style={{margin:0, fontSize: 20}}>Blind Justice</h2>
+            <div style={{fontSize: 12, opacity: 0.7}}>Room: {ROOM_ID} | Phase: {room.phase}</div>
          </div>
          <div style={{display:'flex', gap: 10}}>
-             {room.phase === "LOBBY" && <button onClick={handleStartGame} style={btnStyle}>Deal Game</button>}
+             <button onClick={handleResetTable} style={{...btnStyle, background:'#ef4444'}}>Reset Room</button>
+             
+             {/* START GAME BUTTON - Visible in LOBBY or FINISHED phases */}
+             {(room.phase === "LOBBY" || room.phase === "FINISHED") && (
+                 <button onClick={handleStartGame} style={btnStyle}>Deal Game</button>
+             )}
+             
              {!meName && (
-               <div style={{display:'flex', gap:5}}>
-                 <input style={{borderRadius:4, border:'none', padding:5}} placeholder="Name" value={meName} onChange={e=>setMeName(e.target.value)} />
-               </div>
+               <input style={{borderRadius:4, border:'none', padding:5}} placeholder="Name" value={meName} onChange={e=>setMeName(e.target.value)} />
              )}
          </div>
       </div>
@@ -314,15 +299,14 @@ export default function MarriageRummyOnline() {
                 <div style={{fontSize:10, color:'#94a3b8'}}>Stock</div>
              </div>
 
-             {/* JOKER - HIDDEN LOGIC */}
+             {/* JOKER */}
              <div style={{...cardBaseStyle, border: '2px solid gold', background: jokerRevealed ? '#fff' : '#334155'}}>
                  {jokerRevealed && jokerCard ? (
                      <CardFace card={jokerCard} />
                  ) : (
                      <div style={{textAlign:'center', fontSize: 10, color:'#fff'}}>
-                        <div>🔒</div>
-                        <div>Joker</div>
-                        {myWeight < 3 && <div style={{fontSize:9, opacity:0.7}}>(Req: 3)</div>}
+                        <div>🔒</div><div>Joker</div>
+                        {myWeight < 3 && <div style={{fontSize:8, opacity:0.7}}>(Req: 3)</div>}
                      </div>
                  )}
              </div>
@@ -367,7 +351,7 @@ export default function MarriageRummyOnline() {
                    <div style={{display:'flex', alignItems:'center', gap: 10}}>
                       <span style={{fontWeight:'bold'}}>{myP.name}</span>
                       <span style={{fontSize: 12, background: jokerRevealed ? '#22c55e' : '#ef4444', padding:'2px 6px', borderRadius:4}}>
-                        Weight: {myWeight} {jokerRevealed ? "(Joker Unlocked)" : "(Blind)"}
+                        Weight: {myWeight} {jokerRevealed ? "(Unlocked)" : "(Locked)"}
                       </span>
                    </div>
                    <div style={{display:'flex', gap: 8}}>
@@ -422,7 +406,7 @@ export default function MarriageRummyOnline() {
 }
 
 // ------------------------------
-// Sub-Components & Styles
+// Sub-Components
 // ------------------------------
 
 function CardFace({ card }) {
@@ -451,9 +435,8 @@ const btnStyle = {
 };
 
 function getSeatPos(i, meSeat) {
-    // Rotates seats so "me" is always at bottom (index 0 relative visual)
     const positions = [
-        { bottom: 10, left: '50%', transform: 'translateX(-50%)' }, // Me
+        { bottom: 10, left: '50%', transform: 'translateX(-50%)' }, 
         { top: '40%', right: 10 },
         { top: 10, right: '25%' },
         { top: 10, left: '25%' },
