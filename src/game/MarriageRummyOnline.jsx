@@ -3,9 +3,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getDatabase, ref, update, onValue, set } from "firebase/database";
 
-// ------------------------------
-// 1. Firebase Configuration
-// ------------------------------
+// ... (Firebase Config & Helpers remain the same as previous) ...
 const env = import.meta.env || {};
 const FIREBASE_CONFIG = {
   apiKey:            env.VITE_FIREBASE_API_KEY,
@@ -16,13 +14,9 @@ const FIREBASE_CONFIG = {
   messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID,
   appId:             env.VITE_FIREBASE_APP_ID,
 };
-
 const app = getApps().length ? getApp() : initializeApp(FIREBASE_CONFIG);
 const db  = getDatabase(app);
 
-// ------------------------------
-// 2. Constants & Helpers
-// ------------------------------
 const SUITS = ["♠", "♥", "♦", "♣"];
 const RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"];
 const getRankIdx = (r) => RANKS.indexOf(r);
@@ -60,11 +54,7 @@ function isCardWild(card, jokerCard, playerWeight) {
     aceWild: "A",
     suit: jokerCard.suit
   };
-  if (card.rank === ws.rankWild) return true;
-  if (card.suit === ws.suit) {
-    if (card.rank === ws.papluLow || card.rank === ws.papluHigh || card.rank === ws.aceWild) return true;
-  }
-  return false;
+  return card.rank === ws.rankWild || (card.suit === ws.suit && (card.rank === ws.papluLow || card.rank === ws.papluHigh || card.rank === ws.aceWild));
 }
 
 const UI = {
@@ -83,9 +73,6 @@ const UI = {
   }
 };
 
-// ------------------------------
-// 3. Main Component
-// ------------------------------
 export default function MarriageRummyOnline() {
   const [meName, setMeName] = useState(localStorage.getItem("mr_name") || "");
   const [meSeat, setMeSeat] = useState(null);
@@ -96,11 +83,7 @@ export default function MarriageRummyOnline() {
   const ROOM_ID = "global";
 
   useEffect(() => {
-    const unsub = onValue(ref(db, `rooms/${ROOM_ID}`), (snap) => {
-      const val = snap.val();
-      if (val) setRoom(val);
-      else resetRoom();
-    });
+    const unsub = onValue(ref(db, `rooms/${ROOM_ID}`), (snap) => setRoom(snap.val()));
     return () => unsub();
   }, []);
 
@@ -120,7 +103,7 @@ export default function MarriageRummyOnline() {
   const jokerRevealed = myWeight >= 3;
   const jokerCard = room?.deck?.[room?.jokerCardId];
 
-  // Actions
+  // Logic Handlers
   const handleSit = async (i) => {
     if (!meName) return alert("Enter name");
     localStorage.setItem("mr_name", meName);
@@ -139,7 +122,6 @@ export default function MarriageRummyOnline() {
       const j = Math.floor(Math.random() * (i + 1));
       [deckArr[i], deckArr[j]] = [deckArr[j], deckArr[i]];
     }
-
     const deckMap = {};
     deckArr.forEach(c => deckMap[c.id] = c);
     const activeSeats = room.players.filter(p => p.name).map(p => p.seat);
@@ -154,7 +136,6 @@ export default function MarriageRummyOnline() {
       updates[`players/${s}/hasPicked`] = false;
       ptr += 21;
     });
-
     updates.jokerCardId = deckArr[ptr++].id;
     updates.discard = [deckArr[ptr++].id];
     updates.stock = deckArr.slice(ptr).map(c => c.id);
@@ -182,7 +163,7 @@ export default function MarriageRummyOnline() {
   };
 
   const handleAddToMeld = async (targetSeat, meldIdx) => {
-    if (dragItem === null || targetSeat !== meSeat) return; // Only add to own melds for now
+    if (dragItem === null || targetSeat !== meSeat) return;
     const cardId = myP.hand[dragItem];
     const newHand = myP.hand.filter((_, i) => i !== dragItem);
     const newMelds = [...myP.melds];
@@ -195,23 +176,19 @@ export default function MarriageRummyOnline() {
     if (stage.length !== 1) return alert("Select 1 card to discard");
     const cardId = stage[0];
     const newHand = myP.hand.filter(id => id !== cardId);
-    
     const updates = {
       [`players/${meSeat}/hand`]: newHand,
       [`players/${meSeat}/hasPicked`]: false,
       discard: [...(room.discard || []), cardId],
     };
-
     if (newHand.length === 0) {
-        updates.phase = "FINISHED";
-        updates.winner = myP.name;
-        updates.logs = [...(room.logs || []), `${myP.name} has WON!`];
+      updates.phase = "FINISHED";
+      updates.winner = myP.name;
     } else {
-        let nextTurn = (meSeat + 1) % 5;
-        while (!room.players[nextTurn].name) nextTurn = (nextTurn + 1) % 5;
-        updates.turn = nextTurn;
+      let nextTurn = (meSeat + 1) % 5;
+      while (!room.players[nextTurn].name) nextTurn = (nextTurn + 1) % 5;
+      updates.turn = nextTurn;
     }
-
     await update(ref(db, `rooms/${ROOM_ID}`), updates);
     setStage([]);
   };
@@ -219,106 +196,86 @@ export default function MarriageRummyOnline() {
   if (!room) return <div style={{ background: UI.feltDark, minHeight: '100vh' }} />;
 
   return (
-    <div style={{ minHeight: "100vh", background: UI.feltDark, color: UI.text, fontFamily: 'system-ui', padding: 10 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: UI.feltDark, color: UI.text, fontFamily: 'system-ui', overflow: 'hidden' }}>
       
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', padding: '15px 25px', background: 'rgba(0,0,0,0.4)', borderRadius: 12, marginBottom: 20 }}>
+      {/* 1. HEADER SECTION */}
+      <div style={{ flexShrink: 0, display: 'flex', justifyContent: 'space-between', padding: '10px 20px', background: 'rgba(0,0,0,0.4)', borderBottom: '1px solid #334155' }}>
         <div>
-            <h2 style={{margin:0, color: 'white'}}>Blind Justice</h2>
-            {room.phase === "FINISHED" && <div style={{color: 'gold', fontWeight: 'bold', fontSize: 20}}>🏆 {room.winner} Wins!</div>}
+          <h3 style={{margin:0}}>Blind Justice</h3>
+          {room.phase === "FINISHED" && <span style={{color: 'gold', fontSize: 12}}>Winner: {room.winner}</span>}
         </div>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-          <button onClick={resetRoom} style={{ ...UI.btn, background: '#ef4444' }}>Reset Table</button>
-          {room.phase !== "PLAY" && <button onClick={handleStartGame} style={{ ...UI.btn, background: '#22c55e' }}>{room.phase === "FINISHED" ? "New Round" : "Deal Cards"}</button>}
-          {!meSeat && <input placeholder="Your Name" style={{padding: 8, borderRadius: 6, border: 'none'}} value={meName} onChange={e => setMeName(e.target.value)} />}
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <button onClick={resetRoom} style={{ ...UI.btn, background: '#ef4444', padding: '4px 10px' }}>Reset</button>
+          {room.phase !== "PLAY" && <button onClick={handleStartGame} style={{ ...UI.btn, background: '#22c55e', padding: '4px 10px' }}>Deal</button>}
+          {!meSeat && <input placeholder="Name" style={{width: 80, padding: 4}} value={meName} onChange={e => setMeName(e.target.value)} />}
         </div>
       </div>
 
-      {/* Table Area */}
-      <div style={{ position: 'relative', width: '100%', maxWidth: 950, height: 500, margin: '0 auto', background: UI.felt, borderRadius: 250, border: '14px solid #4e342e', boxShadow: 'inset 0 0 80px rgba(0,0,0,0.6)' }}>
-        
-        {/* Center Deck & Discard */}
-        <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', display: 'flex', gap: 20 }}>
-          <div onClick={() => handlePickup('STOCK')} style={{ ...UI.cardBase, background: '#1e293b', border: '1px solid #334155' }}>
-            <div style={{fontSize: 9, color: '#94a3b8'}}>STOCK</div>
+      {/* 2. TABLE SECTION (Middle) */}
+      <div style={{ flex: 1, position: 'relative', overflowY: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40 }}>
+        <div style={{ position: 'relative', width: '100%', maxWidth: 850, height: 450, background: UI.felt, borderRadius: 220, border: '12px solid #4e342e', boxShadow: 'inset 0 0 80px rgba(0,0,0,0.5)' }}>
+          
+          {/* Deck Area */}
+          <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', display: 'flex', gap: 15 }}>
+            <div onClick={() => handlePickup('STOCK')} style={{ ...UI.cardBase, background: '#1e293b' }} />
+            <div style={{ ...UI.cardBase, border: '2px solid gold' }}>
+              {jokerRevealed ? <CardFace card={jokerCard} /> : <div style={{fontSize:20}}>🔒</div>}
+            </div>
+            <div onClick={() => handlePickup('DISCARD')} style={{ ...UI.cardBase }}>
+              <CardFace card={room.deck?.[room.discard?.[room.discard?.length - 1]]} />
+            </div>
           </div>
-          <div style={{ ...UI.cardBase, border: '2px solid gold', cursor: 'default' }}>
-            {jokerRevealed ? <CardFace card={jokerCard} /> : <div style={{fontSize:24}}>🔒</div>}
-          </div>
-          <div onClick={() => handlePickup('DISCARD')} style={{ ...UI.cardBase }}>
-            <CardFace card={room.deck?.[room.discard?.[room.discard?.length - 1]]} />
-          </div>
-        </div>
 
-        {/* Global Player View */}
-        {room.players.map((p, i) => {
+          {/* Player Seats */}
+          {room.players.map((p, i) => {
             const isTurn = room.turn === i && room.phase === "PLAY";
             return (
-                <div key={i} style={{ position: 'absolute', ...getPos(i, meSeat), width: 220, textAlign: 'center' }}>
-                    <div style={{ padding: '6px 14px', background: isTurn ? '#f59e0b' : 'rgba(0,0,0,0.6)', borderRadius: 25, color: isTurn ? '#000' : '#fff', display: 'inline-block', fontSize: 14, fontWeight: 'bold', marginBottom: 8, border: isTurn ? '2px solid white' : 'none' }}>
-                        {p.name || <button onClick={() => handleSit(i)} style={{fontSize: 11}}>Sit</button>}
-                    </div>
-                    
-                    {/* Publicly Visible Melds */}
-                    <div style={{ display: 'flex', gap: 6, justifyContent: 'center', flexWrap: 'wrap' }}>
-                        {p.melds?.map((m, mi) => (
-                            <div key={mi} 
-                                 onDragOver={e => e.preventDefault()}
-                                 onDrop={() => handleAddToMeld(i, mi)}
-                                 style={{ display: 'flex', gap: 1, background: 'rgba(0,0,0,0.3)', padding: 3, borderRadius: 5, border: '1px solid rgba(255,255,255,0.1)' }}>
-                                {m.cards.map(cid => (
-                                    <div key={cid} style={{...UI.cardBase, width: 24, height: 36, fontSize: 10, borderRadius: 2}}>
-                                        <CardFace card={room.deck[cid]} mini />
-                                    </div>
-                                ))}
-                            </div>
-                        ))}
-                    </div>
+              <div key={i} style={{ position: 'absolute', ...getPos(i, meSeat), width: 180, textAlign: 'center' }}>
+                <div style={{ padding: '4px 12px', background: isTurn ? '#f59e0b' : 'rgba(0,0,0,0.6)', borderRadius: 20, fontSize: 12, fontWeight: 'bold' }}>
+                  {p.name || <button onClick={() => handleSit(i)} style={{fontSize: 9}}>Sit</button>}
                 </div>
-            );
-        })}
-      </div>
-
-      {/* Player Dashboard */}
-      {myP && (
-        <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, background: '#1e293b', padding: '20px', borderTop: '3px solid #334155', zIndex: 100 }}>
-          <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-            
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 15 }}>
-              <div style={{display:'flex', gap: 20, alignItems: 'center'}}>
-                <span style={{fontSize: 18, fontWeight: 'bold'}}>{myP.name}</span>
-                <div style={{ fontSize: 12, background: jokerRevealed ? '#16a34a' : '#475569', padding: '4px 12px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.2)' }}>
-                    Meld Weight: {myWeight} {jokerRevealed ? "🔓 JOKER ACTIVE" : "🔒 LOCKED"}
+                <div style={{ display: 'flex', gap: 2, justifyContent: 'center', marginTop: 5 }}>
+                  {p.melds?.map((m, mi) => (
+                    <div key={mi} onDragOver={e => e.preventDefault()} onDrop={() => handleAddToMeld(i, mi)} style={{ display: 'flex', background: 'rgba(0,0,0,0.2)', padding: 2, borderRadius: 3 }}>
+                      {m.cards.map(cid => <div key={cid} style={{...UI.cardBase, width: 18, height: 28, fontSize: 8}}><CardFace card={room.deck[cid]} mini /></div>)}
+                    </div>
+                  ))}
                 </div>
               </div>
-              <div style={{ display: 'flex', gap: 10 }}>
-                <button onClick={() => update(ref(db, `rooms/${ROOM_ID}/players/${meSeat}`), { hand: sortHandIds(room.deck, myP.hand) })} style={{ ...UI.btn, background: '#ca8a04' }}>Sort Hand</button>
-                {stage.length >= 3 && <button onClick={handlePlayMeld} style={{ ...UI.btn, background: '#2563eb' }}>Play New Meld</button>}
-                <button onClick={handleDiscard} style={{ ...UI.btn, background: '#dc2626' }} disabled={!myP.hasPicked}>Discard Selection</button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 3. PLAYER TRAY (Bottom) */}
+      {myP && (
+        <div style={{ flexShrink: 0, background: '#1e293b', padding: '15px 20px', borderTop: '2px solid #334155' }}>
+          <div style={{ maxWidth: 1000, margin: '0 auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
+              <div style={{fontSize: 14}}><b>{myP.name}</b> | Weight: {myWeight} {jokerRevealed ? "🔓" : "🔒"}</div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={() => update(ref(db, `rooms/${ROOM_ID}/players/${meSeat}`), { hand: sortHandIds(room.deck, myP.hand) })} style={{ ...UI.btn, background: '#ca8a04', padding: '4px 10px' }}>Sort</button>
+                {stage.length >= 3 && <button onClick={handlePlayMeld} style={{ ...UI.btn, background: '#2563eb', padding: '4px 10px' }}>Meld</button>}
+                <button onClick={handleDiscard} style={{ ...UI.btn, background: '#dc2626', padding: '4px 10px' }} disabled={!myP.hasPicked}>Discard</button>
               </div>
             </div>
 
-            {/* My Hand (Staging Area) */}
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, minHeight: 85, padding: 12, background: 'rgba(0,0,0,0.3)', borderRadius: 10, border: '1px solid #334155' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, padding: 8, background: 'rgba(0,0,0,0.2)', borderRadius: 8 }}>
               {myP.hand?.map((id, idx) => {
                 const isSelected = stage.includes(id);
-                const isWild = isCardWild(room.deck[id], jokerCard, myWeight);
                 return (
-                  <div
-                    key={id} draggable
-                    onDragStart={() => setDragItem(idx)}
-                    onDragOver={e => e.preventDefault()}
+                  <div key={id} draggable onDragStart={() => setDragItem(idx)} onDragOver={e => e.preventDefault()}
                     onDrop={() => {
-                        const newHand = [...myP.hand];
-                        const item = newHand.splice(dragItem, 1)[0];
-                        newHand.splice(idx, 0, item);
-                        update(ref(db, `rooms/${ROOM_ID}/players/${meSeat}`), { hand: newHand });
+                      const newHand = [...myP.hand];
+                      const item = newHand.splice(dragItem, 1)[0];
+                      newHand.splice(idx, 0, item);
+                      update(ref(db, `rooms/${ROOM_ID}/players/${meSeat}`), { hand: newHand });
                     }}
                     onClick={() => setStage(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id])}
-                    style={{ ...UI.cardBase, border: isWild ? '3px solid #f59e0b' : isSelected ? '3px solid #3b82f6' : '1px solid #94a3b8', transform: isSelected ? 'translateY(-20px)' : 'none', transition: 'transform 0.2s cubic-bezier(0.18, 0.89, 0.32, 1.28)' }}
+                    style={{ ...UI.cardBase, border: isSelected ? '2px solid #3b82f6' : '1px solid #94a3b8', transform: isSelected ? 'translateY(-10px)' : 'none' }}
                   >
                     <CardFace card={room.deck[id]} />
-                    {isWild && <div style={{position:'absolute', top:-6, right:-6, fontSize:12, filter: 'drop-shadow(0 0 2px black)'}}>⭐</div>}
+                    {isCardWild(room.deck[id], jokerCard, myWeight) && <div style={{position:'absolute', top:-4, right:-4}}>⭐</div>}
                   </div>
                 );
               })}
@@ -335,19 +292,19 @@ function CardFace({ card, mini }) {
   const isRed = card.suit === '♥' || card.suit === '♦';
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', color: isRed ? '#dc2626' : '#1e293b', lineHeight: 1 }}>
-      <div style={{ fontWeight: 'bold', fontSize: mini ? 11 : 16 }}>{card.rank}</div>
-      <div style={{ fontSize: mini ? 14 : 20 }}>{card.suit}</div>
+      <div style={{ fontWeight: 'bold', fontSize: mini ? 10 : 14 }}>{card.rank}</div>
+      <div style={{ fontSize: mini ? 12 : 18 }}>{card.suit}</div>
     </div>
   );
 }
 
 function getPos(i, me) {
   const p = [
-    { bottom: 15, left: '50%', transform: 'translateX(-50%)' }, 
-    { top: '55%', right: 25 }, 
-    { top: 20, right: '22%' }, 
-    { top: 20, left: '22%' }, 
-    { top: '55%', left: 25 }
+    { bottom: -20, left: '50%', transform: 'translateX(-50%)' }, 
+    { top: '50%', right: -40, transform: 'translateY(-50%)' }, 
+    { top: -30, right: '15%' }, 
+    { top: -30, left: '15%' }, 
+    { top: '50%', left: -40, transform: 'translateY(-50%)' }
   ];
   const idx = me === null ? i : (i - me + 5) % 5;
   return p[idx];
