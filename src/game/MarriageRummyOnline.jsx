@@ -29,7 +29,7 @@ const UI = {
   felt: "#14532d",
   panel: "#1e293b",
   text: "#f1f5f9",
-  accent: "#fbbf24", // Brighter Gold
+  accent: "#fbbf24", 
   danger: "#ef4444",
   success: "#22c55e",
   card: {
@@ -198,7 +198,11 @@ export default function MarriageRummyOnline() {
     if (stage.length !== 1) return alert("Select 1 card");
     const cardId = stage[0];
     const newHand = myP.hand.filter(id => id !== cardId);
-    const updates = { [`players/${meSeat}/hand`]: newHand, [`players/${meSeat}/hasPicked`: false, discard: [...(room.discard || []), cardId] };
+    const updates = { 
+        [`players/${meSeat}/hand`]: newHand, 
+        [`players/${meSeat}/hasPicked`]: false, 
+        discard: [...(room.discard || []), cardId] 
+    };
     if (newHand.length === 0) {
       updates.phase = "ROUND_END";
       updates.winnerSeat = meSeat;
@@ -249,7 +253,6 @@ export default function MarriageRummyOnline() {
       <div style={{ padding: "12px 20px", background: "rgba(0,0,0,0.4)", borderBottom: "1px solid #334155", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{color: UI.text}}><b>Blind Justice</b></div>
         
-        {/* TURN INDICATOR BANNER */}
         {room.phase === "PLAY" && (
             <div style={{ background: isMyTurn ? UI.success : 'rgba(255,255,255,0.1)', padding: "6px 20px", borderRadius: 6, fontWeight: "bold", border: isMyTurn ? '2px solid white' : '1px solid transparent', color: isMyTurn ? '#fff' : UI.accent }}>
                 {isMyTurn ? "🔥 YOUR TURN!" : `Waiting for ${activePlayerName}...`}
