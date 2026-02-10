@@ -49,7 +49,7 @@ export default function MarriageRummyOnline() {
       const data = snap.val();
       if (data) {
         setRoom(data);
-        if (meSeat !== null && data.players[meSeat]?.hand) {
+        if (meSeat !== null && data.players?.[meSeat]?.hand) {
           if (data.players[meSeat].hand.length !== localHand.length) {
             setLocalHand(data.players[meSeat].hand);
           }
@@ -83,51 +83,83 @@ export default function MarriageRummyOnline() {
 
   const updateRemoteHand = async (newOrder) => {
     setLocalHand(newOrder);
-    await update(ref(db, `rooms/${ROOM_ID}/players/${meSeat}`), { hand: newOrder });
+    if (meSeat !== null) {
+      await update(ref(db, `rooms/${ROOM_ID}/players/${meSeat}`), { hand: newOrder });
+    }
   };
 
   const handleDiscard = async () => {
     if (!isMyTurn || !myP?.hasPicked || !selectedCard) return;
     const newHand = localHand.filter(id => id !== selectedCard);
     const newDiscard = [...(room.discard || []), selectedCard];
-    const nextTurn = (meSeat + 1) % 5;
+    const activePlayers = room.players.filter(p => p.name);
+    const myActiveIdx = activePlayers.findIndex(p => p.seat === meSeat);
+    const nextPlayer = activePlayers[(myActiveIdx + 1) % activePlayers.length];
     
     setSelectedCard(null);
     await update(ref(db, `rooms/${ROOM_ID}`), {
       [`players/${meSeat}/hand`]: newHand,
       [`players/${meSeat}/hasPicked`]: false,
       discard: newDiscard,
-      turn: nextTurn
+      turn: nextPlayer.seat
     });
   };
 
+  const handlePickup = async (src) => {
+    if (!isMyTurn || myP?.hasPicked) return;
+    const cardId = src === "STOCK" ? room.stock[0] : room.discard[room.discard.length - 1];
+    const newHand = [...localHand, cardId];
+    const updates = { 
+      [`players/${meSeat}/hand`]: newHand,
+      [`players/${meSeat}/hasPicked`]: true 
+    };
+    if (src === "STOCK") updates.stock = room.stock.slice(1);
+    else updates.discard = room.discard.slice(0, -1);
+    await update(ref(db, `rooms/${ROOM_ID}`), updates);
+  };
+
   return (
-    <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: UI.bg, color: UI.text }}>
-      <div style={{ padding: "10px 20px", display: "flex", justifyContent: "space-between", background: "rgba(0,0,0,0.5)" }}>
-        <h2 style={{margin:0}}>Blind Justice</h2>
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: UI.bg, color: UI.text, fontFamily: 'sans-serif' }}>
+      <div style={{ padding: "10px 20px", display: "flex", justifyContent: "space-between", alignItems: 'center', background: "rgba(0,0,0,0.5)" }}>
+        <h2 style={{margin:0, fontSize: 18}}>Blind Justice</h2>
         <div style={{display:'flex', gap: 10}}>
-            <button onClick={handleSort} style={btnStyle(UI.accent)}>Sort Hand</button>
+            <button onClick={handleSort} style={btnStyle(UI.panel)}>Sort Hand</button>
             {isMyTurn && myP?.hasPicked && (
                 <button onClick={handleDiscard} disabled={!selectedCard} style={btnStyle(selectedCard ? UI.danger : "#475569")}>
-                    Discard Selected
+                    Confirm Discard
                 </button>
             )}
         </div>
       </div>
 
       <div style={{ flex: 1, position: "relative", background: UI.felt }}>
-         {/* Seats and Center Deck Area logic here... */}
+        {/* Game Table Content (Seats, Deck, etc.) */}
+        <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)", display: "flex", gap: 25 }}>
+          <div onClick={() => handlePickup('STOCK')} style={{ ...UI.card.base, ...UI.card.md, background: "#1e293b", color: 'white', border: '2px solid rgba(255,255,255,0.1)' }}>DECK</div>
+          <div onClick={() => handlePickup('DISCARD')} style={{ ...UI.card.base, ...UI.card.md }}>
+            <CardFace card={room.deck?.[room.discard?.[room.discard.length - 1]]} />
+          </div>
+        </div>
       </div>
 
       {myP && (
-        <div style={{ background: UI.panel, padding: "15px 20px", borderTop: "4px solid #334155" }}>
-          <Reorder.Group axis="x" values={localHand} onReorder={updateRemoteHand} style={{ display: "flex", gap: 8, listStyle: 'none', padding: 0, overflowX: "auto", minHeight: '120px' }}>
+        <div style={{ background: UI.panel, padding: "20px", borderTop: "4px solid #334155" }}>
+          <Reorder.Group axis="x" values={localHand} onReorder={updateRemoteHand} style={{ display: "flex", gap: 10, listStyle: 'none', padding: "10px 0", overflowX: "auto", minHeight: '120px' }}>
             {localHand.map(id => (
-              <Reorder.Item key={id} value={id}>
+              <Reorder.Item key={id} value={id} style={{ flexShrink: 0 }}>
                 <motion.div 
                   onClick={() => setSelectedCard(selectedCard === id ? null : id)}
-                  animate={{ y: selectedCard === id ? -20 : 0 }}
-                  style={{ ...UI.card.base, ...UI.card.lg, border: selectedCard === id ? `3px solid ${UI.accent}` : "none" }}>
+                  animate={{ 
+                    y: selectedCard === id ? -25 : 0,
+                    scale: selectedCard === id ? 1.05 : 1
+                  }}
+                  whileHover={{ scale: 1.05 }}
+                  style={{ 
+                    ...UI.card.base, 
+                    ...UI.card.lg, 
+                    border: selectedCard === id ? `3px solid ${UI.accent}` : "1px solid #ddd",
+                    boxShadow: selectedCard === id ? `0 0 15px ${UI.accent}66` : "0 2px 5px rgba(0,0,0,0.2)"
+                  }}>
                   <CardFace card={room.deck[id]} />
                 </motion.div>
               </Reorder.Item>
@@ -143,11 +175,11 @@ function CardFace({ card }) {
   if (!card) return null;
   const isRed = ["♥", "♦"].includes(card.suit);
   return (
-    <div style={{ color: isRed ? "#ef4444" : "#0f172a", textAlign: "center" }}>
-      <div style={{ fontWeight: "bold", fontSize: 18 }}>{card.rank}</div>
-      <div style={{ fontSize: 22 }}>{card.suit}</div>
+    <div style={{ color: isRed ? "#ef4444" : "#0f172a", textAlign: "center", pointerEvents: 'none' }}>
+      <div style={{ fontWeight: "bold", fontSize: 20 }}>{card.rank}</div>
+      <div style={{ fontSize: 26 }}>{card.suit}</div>
     </div>
   );
 }
 
-function btnStyle(bg) { return { background: bg, border: "none", color: "white", padding: "8px 16px", borderRadius: 6, cursor: "pointer", fontWeight: "bold" }; }
+function btnStyle(bg) { return { background: bg, border: "none", color: "white", padding: "10px 18px", borderRadius: 8, cursor: "pointer", fontWeight: "bold", transition: 'all 0.2s' }; }
