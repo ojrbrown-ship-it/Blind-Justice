@@ -11,6 +11,7 @@ import {
   sidePayments, flattenHoldings, tipluWilds
 } from './engine'
 import { suitName, suitColour, RANKS } from './types'
+import { Reorder } from 'framer-motion'
 
 // ===================== HELPERS =====================
 
@@ -38,6 +39,34 @@ function sortHand(hand, tiplu, isRevealed) {
   })
 }
 
+const remainingInHand = meState.hand.length - handSel.length;
+if (remainingInHand < 1) {
+  setMessage("Failsafe: You must keep at least one card to discard.");
+  return;
+}
+
+const targetPlayer = players.find(p => p.id === targetPlayerId);
+const targetMeld = targetPlayer?.melds?.find(m => m.id === meldId);
+if (!targetMeld) return;
+
+const combinedCards = [...targetMeld.cards, ...handSel];
+  const tiplu = room.tiplu;
+  const revealed = targetPlayer.isRevealed; 
+  
+  let isValid = false;
+  if (targetMeld.kind === 'sequence') {
+    isValid = isSequence(combinedCards, revealed, tiplu);
+  } else if (targetMeld.kind === 'rankset') {
+    isValid = isRankSet(combinedCards, revealed, tiplu);
+  } else if (targetMeld.kind === 'identical') {
+    isValid = isIdenticalSet(combinedCards);
+  }
+
+  if (!isValid) {
+    setMessage(`Invalid: These cards do not fit the ${targetMeld.kind}.`);
+    return;
+  }
+
 // ===================== CARD COMPONENT =====================
 
 function PlayingCard({ card, selected, wild, onClick, mini, faceDown }) {
@@ -62,30 +91,23 @@ function PlayingCard({ card, selected, wild, onClick, mini, faceDown }) {
 
 // ===================== MELDS DISPLAY =====================
 
-function MeldsDisplay({ melds, tiplu, showWild }) {
-  if (!melds || !melds.length) return <span className="muted" style={{ fontSize: '0.8rem' }}>No melds yet.</span>
+function MeldsDisplay({ melds, tiplu, onMeldClick }) {
   return (
-    <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-      {melds.map(m => (
-        <div key={m.id} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <span className="meld-label">{m.kind}</span>
-            {m.tag === 'TENNALA' && <span className="tennala-badge">TENNALA</span>}
-          </div>
-          <div className="meld-group">
-            {m.cards.map(c => (
-              <PlayingCard
-                key={c.id}
-                card={c}
-                wild={showWild && tiplu && isWildCard(c, tiplu)}
-                mini
-              />
-            ))}
-          </div>
+    <div className="row">
+      {melds.map((m) => (
+        <div 
+          key={m.id} 
+          className="meld-group" 
+          onClick={() => onMeldClick?.(m.id)}
+          style={{ cursor: onMeldClick ? 'pointer' : 'default' }}
+        >
+          {m.cards.map((c) => (
+            <PlayingCard key={c.id} card={c} mini wild={isWildCard(c, tiplu)} />
+          ))}
         </div>
       ))}
     </div>
-  )
+  );
 }
 
 // ===================== PLAYER SEAT =====================
@@ -150,7 +172,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
   const roomRef = doc(db, 'rooms', roomId)
   const playersRef = collection(roomRef, 'players')
 
-  const [room, setRoom] = useState(null)
+  const [room, setRoom] = useState(null);
   const [players, setPlayers] = useState([])
   const [handSel, setHandSel] = useState([])
   const [message, setMessage] = useState('')
@@ -243,7 +265,6 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
   const MAX_SEATS = room?.maxPlayers || 5
   const [hasEnteredName, setHasEnteredName] = useState(false)
 
-  const meState = players.find(p => p.id === playerId)
   const isSeated = meState && meState.seatedAt > 0
 
   // If reconnecting and already seated, skip the name entry screen
@@ -338,13 +359,46 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
   }
 
   // ---------- MANUAL DEAL ----------
-  const newRound = async () => {
-    try {
-      const seated = players.filter(p => p.seatedAt > 0)
-      if (seated.length < 1) { setMessage('Need at least 1 player to deal.'); return }
-      const deck = shuffle(buildThreeDecks(), nanoid(8))
-      const { deck: remaining, hands, tiplu, discard } = dealInitial(deck, seated.length)
-      await runTransaction(db, async (tx) => {
+const newRound = async () => {
+  try {
+    const seated = players.filter(p => p.seatedAt > 0);
+    if (seated.length < 1) { setMessage('Need at least 1 player to deal.'); return; }
+
+    const deck = shuffle(buildThreeDecks(), nanoid(8));
+    const { deck: remaining, hands, tiplu, discard } = dealInitial(deck, seated.length);
+
+    await runTransaction(db, async (tx) => {
+      // Update room
+      tx.update(roomRef, {
+        status: 'playing',
+        tiplu,
+        tipluPublicAtGrace: false,
+        deck: remaining,
+        discard,
+        turnIndex: 0,
+        startedAt: Date.now(),
+        deckSeed: nanoid(10),
+      });
+
+      // Deal hands to each seated player
+      seated.forEach((pl, idx) => {
+        tx.update(doc(playersRef, pl.id), {
+          hand: hands[idx],
+          melds: [],
+          isRevealed: false,
+          hasDrawnThisTurn: false,
+          tennalaDeclared: false,
+          graceDone: false,
+        });
+      });
+    });
+
+    setHandSel([]);
+    setMessage('');
+  } catch (e) {
+    setMessage('Failed to start a new round: ' + (e?.message ?? e));
+  }
+};
         tx.update(roomRef, {
           status: 'playing',
           tiplu,
@@ -364,10 +418,9 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
             tennalaDeclared: false,
             graceDone: false
           })
-        })
-      })
-    } catch (e) {
-      setMessage('Failed to start a new round: ' + (e?.message || e))
+        }); // Closes the transaction callback
+    } catch (e) { // Closes the try block and starts catch
+      setMessage('Failed to start a new round: ' + (e?.message || e));
     }
   }
 
@@ -386,11 +439,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
   const isMyTurn = room?.status === 'playing' && currentTurnPlayerId === playerId
   const tipluVisibleToMe = meState?.isRevealed || (room?.status === 'grace' && room?.tipluPublicAtGrace)
 
-  const selectedCards = useMemo(() => {
-    if (!meState) return []
-    const byId = Object.fromEntries((meState.hand || []).map(c => [c.id, c]))
-    return handSel.map(id => byId[id]).filter(Boolean)
-  }, [handSel, meState])
+  const selectedCards = handSel;
 
   const toggleSel = useCallback((id) => {
     setHandSel(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
@@ -468,6 +517,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
 
   const layMeld = async (kind) => {
     if (!meState || !selectedCards.length) return
+    if (!meState || !handSel.length) return;
     const cards = selectedCards
     const revealed = meState.isRevealed
     const tiplu = room.tiplu
@@ -478,7 +528,49 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
     if (kind === 'identical') ok = isIdenticalSet(cards)
     if (kind === 'rankset') ok = isRankSet(cards, revealed, tiplu)
     if (kind === 'sequence') ok = isSequence(cards, revealed, tiplu)
-    if (!ok) { setMessage('Invalid meld for the current phase.'); return }
+    if (!ok) { setMessage('Invalid meld for the current phase.'); return
+    if (meState.hand.length - handSel.length === 0) {
+      setMessage("Failsafe: You must keep one card to discard.");
+      return;
+    }
+
+    const cards = [...handSel];
+  const revealed = meState.isRevealed;
+  const tiplu = room.tiplu;
+
+  let ok = false;
+  if (kind === 'identical') ok = isIdenticalSet(cards);
+  if (kind === 'rankset') ok = isRankSet(cards, revealed, tiplu);
+  if (kind === 'sequence') ok = isSequence(cards, revealed, tiplu);
+
+  if (!ok) {
+    setMessage("Invalid " + kind);
+    return;
+  }
+
+  try {
+    await runTransaction(db, async (tx) => {
+      const pRef = doc(playersRef, playerId);
+      const meD = (await tx.get(pRef)).data();
+      const remaining = meD.hand.filter(c => !cards.some(x => x.id === c.id));
+      const meld = { id: nanoid(6), kind, cards };
+      const newMelds = [...meD.melds, meld];
+      
+      let willReveal = meD.isRevealed;
+      if (!meD.isRevealed) {
+        const credits = newMelds.reduce((s, m) => s + revealCreditsForMeld(m, false), 0);
+        if (credits >= 3) willReveal = true;
+      }
+      
+      tx.update(pRef, { hand: remaining, melds: newMelds, isRevealed: willReveal });
+    });
+    setHandSel([]);
+    setMessage("");
+  } catch (e) {
+    setMessage("Lay meld failed.");
+  }
+};
+     }
 
     // Grace constraints for unrevealed players
     if (inGrace && !revealed) {
@@ -536,6 +628,30 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
       setMessage('Add to meld: ' + (e?.message || e))
     }
   }
+
+  const addToExistingMeld = async (targetPlayerId, meldId) => {
+    if (handSel.length !== 1) return; // Usually you add one card at a time
+    if (!meState || handSel.length === 0) return;
+  
+    const cardToAdd = handSel[0];
+    const targetPlayer = players.find(p => p.id === targetPlayerId);
+    const targetMeld = targetPlayer.melds.find(m => m.id === meldId);
+
+    // Logic to update the meld cards
+    const updatedMelds = targetPlayer.melds.map(m => {
+      if (m.id === meldId) {
+        return { ...m, cards: [...m.cards, cardToAdd] };
+      }
+      return m;
+    });
+
+    await updateDoc(doc(playersRef, targetPlayerId), { melds: updatedMelds });
+    // Remove card from your hand
+    await updateDoc(doc(playersRef, playerId), {
+      hand: meState.hand.filter(c => c.id !== cardToAdd.id)
+    });
+    setHandSel([]);
+  };
 
   const declareTennala = async () => {
     if (!meState || meState.tennalaDeclared) return
@@ -630,10 +746,16 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
   }
 
   // ---------- Derived ----------
-  const sortedHand = useMemo(() => {
-    if (!meState?.hand) return []
-    return sortHand(meState.hand, room?.tiplu, meState.isRevealed)
-  }, [meState?.hand, room?.tiplu, meState?.isRevealed])
+  const triggerManualSort = async () => {
+    if (!meState?.hand) return;
+    const sorted = sortHand(meState.hand, room.tiplu, meState.isRevealed);
+    await updateDoc(doc(playersRef, playerId), { hand: sorted });
+  }, [meState, room, playerId])
+
+  const handleReorder = async (newOrder) => {
+    // Update local state immediately for smoothness, then Firestore
+    await updateDoc(doc(playersRef, playerId), { hand: newOrder });
+  };
 
   const topDiscard = room?.discard?.length ? room.discard[room.discard.length - 1] : null
   const deckCount = room?.deck?.length || 0
@@ -833,6 +955,29 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
           })}
           {!seatedPlayers.length && <span className="muted" style={{ fontSize: '0.85rem' }}>No players seated.</span>}
         </div>
+        <div className="player-melds">
+          <MeldsDisplay 
+            melds={p.melds} 
+            tiplu={room?.tiplu} 
+            onMeldClick={(meldId) => {
+              // Only allow clicking if it's my turn and I've drawn a card
+              if (isMyTurn && meState?.hasDrawnThisTurn) {
+                addToExistingMeld(p.id, meldId);
+              }
+            }} 
+          />
+        </div>
+        <div className="my-melds-area">
+          <MeldsDisplay 
+            melds={meState?.melds || []} 
+            tiplu={room?.tiplu} 
+            onMeldClick={(meldId) => {
+              if (isMyTurn && meState?.hasDrawnThisTurn) {
+                addToExistingMeld(playerId, meldId);
+              }
+            }} 
+          />
+        </div>
       </div>
 
       {/* MY HAND */}
@@ -847,17 +992,28 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
           )}
         </div>
         <div className="hand-area">
-          {sortedHand.map(c => (
-            <PlayingCard
-              key={c.id}
-              card={c}
-              selected={handSel.includes(c.id)}
-              wild={tipluVisibleToMe && room?.tiplu && isWildCard(c, room.tiplu)}
-              onClick={() => toggleSel(c.id)}
-            />
+        <Reorder.Group 
+          axis="x" 
+          values={meState?.hand || []} 
+          onReorder={handleReorder}
+          style={{ display: 'flex', gap: '4px', listStyle: 'none', padding: 0 }}
+        >
+          {(meState?.hand || []).map((card) => (
+            <Reorder.Item 
+              key={card.id} 
+              value={card}
+              style={{ position: 'relative' }}
+            >
+              <PlayingCard
+                card={card}
+                selected={handSel.some((s) => s.id === card.id)}
+                onClick={() => toggleSelect(card)}
+                wild={isWildCard(card, room?.tiplu)}
+              />
+            </Reorder.Item>
           ))}
-          {!sortedHand.length && <span className="muted" style={{ fontSize: '0.85rem' }}>No cards in hand.</span>}
-        </div>
+        </Reorder.Group>
+      </div>
         {/* Add to existing meld buttons */}
         {meState?.melds?.length > 0 && handSel.length > 0 && (
           <div style={{ marginTop: 8 }}>
@@ -967,6 +1123,8 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
             >
               Tennala
             </button>
+            <div className="divider" />
+            <button onClick={triggerManualSort}>Sort Hand</button>
             <div className="divider" />
             <button
               className="btn-danger"

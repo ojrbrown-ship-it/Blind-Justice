@@ -38,7 +38,7 @@
       }
 
       *, *::before, *::after { box-sizing: border-box; }
-      html, body { height: 100%; margin: 0; }
+      html, body { height: 100%; margin: 0; overflow: hidden; }
       body {
         font-family: var(--font-sans);
         background: var(--bg);
@@ -50,7 +50,13 @@
       h1 { font-size: 1.5rem; }
       h3 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-secondary); }
 
-      .container { max-width: 1200px; margin: 0 auto; padding: 12px 16px; }
+      .container { height: 100dvh; /* Dynamic Viewport Height */
+        display: flex;
+        flex-direction: column;
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 8px 16px;
+        overflow: hidden; }
 
       .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
@@ -172,10 +178,14 @@
 
       /* ===== TABLE ===== */
       .tableWrap {
-        position: relative; width: 100%;
-        aspect-ratio: 2 / 1;
-        display: flex; justify-content: center; align-items: center;
-        margin: 8px 0;
+        flex: 1;
+        min-height: 0; /* Important for flex-shrink/grow behavior */
+        position: relative;
+        width: 100%;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        margin: 4px 0;
       }
       .table {
         width: min(95vw, 800px); aspect-ratio: 2 / 1;
@@ -202,6 +212,14 @@
         letter-spacing: 0.08em; color: rgba(255,255,255,0.5);
         font-weight: 600;
       }
+      .hand-area {
+        height: 120px;
+        flex-shrink: 0;
+        display: flex;
+        gap: 4px;
+        padding: 8px 0;
+        overflow-x: auto;
+        align-items: flex-end;
 
       .seat {
         position: absolute; display: flex; flex-direction: column;
