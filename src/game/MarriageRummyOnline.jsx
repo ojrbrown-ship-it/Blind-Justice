@@ -14,13 +14,14 @@ import { suitName, suitColour, RANKS } from './types'
 
 // ===================== HELPERS =====================
 
-function seatPosition(index, total, isMe) {
-  // Place seats around an ellipse. "Me" is always at the bottom center.
-  const angle = (index / total) * 2 * Math.PI - Math.PI / 2
-  const x = 50 + 42 * Math.cos(angle)
-  const y = 50 + 40 * Math.sin(angle)
-  return { top: `${y}%`, left: `${x}%` }
-}
+// Fixed seat positions around an elliptical table (up to 5 seats)
+const SEAT_POSITIONS = [
+  { top: '88%', left: '50%' },  // Seat 0 — bottom center
+  { top: '50%', left: '6%' },   // Seat 1 — left
+  { top: '10%', left: '28%' },  // Seat 2 — top-left
+  { top: '10%', left: '72%' },  // Seat 3 — top-right
+  { top: '50%', left: '94%' },  // Seat 4 — right
+]
 
 function meldCreditsTotal(melds) {
   return (melds || []).reduce((s, m) => s + revealCreditsForMeld(m, false), 0)
@@ -112,6 +113,33 @@ function PlayerSeat({ player, isMe, isCurrentTurn, position }) {
       {(player.hand?.length > 0) && (
         <span className="seat-hand-count">{player.hand.length} cards</span>
       )}
+    </div>
+  )
+}
+
+// ===================== EMPTY SEAT =====================
+
+function EmptySeat({ seatIndex, position, onClick }) {
+  return (
+    <div
+      className="seat"
+      style={{ left: position.left, top: position.top, cursor: 'pointer' }}
+      onClick={() => onClick(seatIndex)}
+      role="button"
+      tabIndex={0}
+      aria-label={`Sit at seat ${seatIndex + 1}`}
+    >
+      <div className="avatar" style={{
+        border: '2px dashed var(--border-strong)',
+        background: 'transparent',
+        color: 'var(--muted)',
+        fontSize: '1.2rem',
+      }}>
+        +
+      </div>
+      <div className="seat-info">
+        <div className="seat-name" style={{ color: 'var(--muted)' }}>Open</div>
+      </div>
     </div>
   )
 }
@@ -211,62 +239,56 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
     return () => unsub()
   }, [roomId])
 
-  // Sit down — only create the player doc if it doesn't already exist
-  const hasSatDown = useRef(false)
-  useEffect(() => {
-    if (!playerId || !room) return
-    if (hasSatDown.current) return
-    const sitDown = async () => {
-      try {
-        const existing = await getDoc(doc(playersRef, playerId))
-        if (existing.exists()) {
-          // Player doc already exists — just update the name if needed, don't touch hand/melds
-          await setDoc(doc(playersRef, playerId), {
-            name: displayName,
-            seatedAt: existing.data().seatedAt || Date.now()
-          }, { merge: true })
-        } else {
-          // First time — create fresh player doc
-          await setDoc(doc(playersRef, playerId), {
-            name: displayName,
-            joinedAt: Date.now(),
-            isRevealed: false,
-            hasDrawnThisTurn: false,
-            melds: [],
-            hand: [],
-            tennalaDeclared: false,
-            graceDone: false,
-            chips: defaultChips,
-            seatedAt: Date.now()
-          })
-        }
-        hasSatDown.current = true
-      } catch (e) {
-        console.error('[Sit down error]', e)
-        setBootError((e?.message || 'Failed to seat player.'))
-      }
-    }
-    sitDown()
-  }, [playerId, room, displayName, defaultChips])
+  // No auto-sit — player must enter name and click a seat
+  const MAX_SEATS = room?.maxPlayers || 5
+  const [hasEnteredName, setHasEnteredName] = useState(false)
 
-  const saveName = async () => {
-    try {
-      localStorage.setItem('bj_name', nameDraft)
-      await setDoc(doc(playersRef, playerId), { name: nameDraft }, { merge: true })
-      setMessage('Name saved.')
-      setTimeout(() => setMessage(''), 2000)
-    } catch (e) {
-      setMessage('Failed to save name: ' + (e?.message || e))
+  const meState = players.find(p => p.id === playerId)
+  const isSeated = meState && meState.seatedAt > 0
+
+  // If reconnecting and already seated, skip the name entry screen
+  useEffect(() => {
+    if (isSeated && !hasEnteredName) {
+      setHasEnteredName(true)
+      if (meState?.name) setNameDraft(meState.name)
     }
+  }, [isSeated])
+
+  const saveName = () => {
+    const name = nameDraft.trim()
+    if (!name) return
+    localStorage.setItem('bj_name', name)
+    setHasEnteredName(true)
   }
 
-  const sitSeat = async () => {
+  const sitAtSeat = async (seatIndex) => {
+    if (!hasEnteredName || !nameDraft.trim()) return
+    // Check if seat is already taken
+    const occupant = players.find(p => p.seatIndex === seatIndex && p.seatedAt > 0)
+    if (occupant) { setMessage('That seat is taken.'); return }
     try {
-      await setDoc(doc(playersRef, playerId), {
-        name: nameDraft || displayName,
-        chips: defaultChips,
-        seatedAt: Date.now()
-      }, { merge: true })
+      const existing = await getDoc(doc(playersRef, playerId))
+      if (existing.exists()) {
+        await setDoc(doc(playersRef, playerId), {
+          name: nameDraft.trim(),
+          seatIndex,
+          seatedAt: Date.now()
+        }, { merge: true })
+      } else {
+        await setDoc(doc(playersRef, playerId), {
+          name: nameDraft.trim(),
+          joinedAt: Date.now(),
+          isRevealed: false,
+          hasDrawnThisTurn: false,
+          melds: [],
+          hand: [],
+          tennalaDeclared: false,
+          graceDone: false,
+          chips: defaultChips,
+          seatIndex,
+          seatedAt: Date.now()
+        })
+      }
       setMessage('')
     } catch (e) {
       setMessage('Failed to sit: ' + (e?.message || e))
@@ -277,7 +299,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
     try {
       await setDoc(doc(playersRef, playerId), {
         hand: [], melds: [], isRevealed: false, hasDrawnThisTurn: false,
-        tennalaDeclared: false, graceDone: false, seatedAt: 0
+        tennalaDeclared: false, graceDone: false, seatedAt: 0, seatIndex: -1
       }, { merge: true })
       setMessage('')
     } catch (e) {
@@ -307,15 +329,13 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
         turnIndex: 0
       })
       setHandSel([])
-      hasSatDown.current = false
+      setHasEnteredName(false)
       setMessage('Table has been reset.')
       setTimeout(() => setMessage(''), 3000)
     } catch (e) {
       setMessage('Reset failed: ' + (e?.message || e))
     }
   }
-
-  const meState = players.find(p => p.id === playerId)
 
   // ---------- MANUAL DEAL ----------
   const newRound = async () => {
@@ -352,7 +372,10 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
   }
 
   // ---------- Turn helpers ----------
-  const seatedPlayers = useMemo(() => players.filter(p => p.seatedAt > 0), [players])
+  const seatedPlayers = useMemo(() =>
+    players.filter(p => p.seatedAt > 0).sort((a, b) => (a.seatIndex ?? 0) - (b.seatIndex ?? 0)),
+    [players]
+  )
 
   const currentTurnPlayerId = useMemo(() => {
     if (!room || !seatedPlayers.length) return null
@@ -629,6 +652,38 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
   }, [room?.tiplu, tipluVisibleToMe])
 
   // ===================== RENDER =====================
+
+  // --- Name entry screen (before sitting) ---
+  if (!hasEnteredName && !isSeated) {
+    return (
+      <div className="container" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', gap: 24 }}>
+        <span className="game-title" style={{ fontSize: '2rem' }}>Blind Justice</span>
+        <p style={{ color: 'var(--ink-secondary)', fontSize: '0.9rem', textAlign: 'center', maxWidth: 360 }}>
+          Enter your name to join the table. You will then choose your seat.
+        </p>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            value={nameDraft}
+            onChange={e => setNameDraft(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && saveName()}
+            placeholder="Your name"
+            style={{ minWidth: 220, padding: '10px 14px', fontSize: '1rem' }}
+            autoFocus
+          />
+          <button className="btn-primary" onClick={saveName} disabled={!nameDraft.trim()}>
+            Enter
+          </button>
+        </div>
+        {/* Boot messages */}
+        {(bootMsg || bootError) && (
+          <div className={`pill ${bootError ? 'danger' : ''}`} style={{ display: 'block' }}>
+            {bootError ? `Error: ${bootError}` : bootMsg}
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="container">
       {/* TOP BAR */}
@@ -656,34 +711,22 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
           {!tipluVisibleToMe && room?.tiplu && (
             <span className="pill">Tiplu: Hidden</span>
           )}
-          {meState && (
+          {isSeated && (
             <span className="pill ok">
               {meState.chips ?? 250} chips
             </span>
           )}
+          <span className="pill" style={{ cursor: 'default' }}>{nameDraft}</span>
+          {isSeated && (
+            <button onClick={leaveSeat} className="btn-danger" style={{ padding: '6px 10px' }}>
+              Leave Seat
+            </button>
+          )}
           <button onClick={resetTable} className="btn-danger" style={{ padding: '6px 10px' }}>
             Reset Table
           </button>
-          <button onClick={() => setShowSettings(!showSettings)} style={{ padding: '6px 10px' }}>
-            {showSettings ? 'Close' : 'Settings'}
-          </button>
         </div>
       </div>
-
-      {/* Settings panel */}
-      {showSettings && (
-        <div className="panel" style={{ marginBottom: 8 }}>
-          <div className="row" style={{ gap: 8 }}>
-            <input value={nameDraft} onChange={e => setNameDraft(e.target.value)} placeholder="Your name" style={{ minWidth: 180 }} />
-            <button onClick={saveName}>Save Name</button>
-            <div className="divider" style={{ width: 1, height: 28, background: 'var(--border-strong)' }} />
-            <button onClick={sitSeat}>Sit Down</button>
-            <button onClick={leaveSeat} className="btn-danger">Leave Seat</button>
-            <div className="divider" style={{ width: 1, height: 28, background: 'var(--border-strong)' }} />
-            <span className="pill" title={playerId}>ID: {playerId.slice(0, 10)}...</span>
-          </div>
-        </div>
-      )}
 
       {/* Boot messages */}
       {(bootMsg || bootError) && (
@@ -700,22 +743,35 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
       {/* THE TABLE */}
       <div className="tableWrap">
         <div className="table">
-          {/* Player seats around the table */}
-          {seatedPlayers.map((p, idx) => {
-            const pos = seatPosition(idx, Math.max(seatedPlayers.length, 3))
-            return (
-              <PlayerSeat
-                key={p.id}
-                player={p}
-                isMe={p.id === playerId}
-                isCurrentTurn={room?.status === 'playing' && currentTurnPlayerId === p.id}
-                position={pos}
-              />
-            )
+          {/* All seat positions — occupied or open */}
+          {Array.from({ length: MAX_SEATS }).map((_, idx) => {
+            const pos = SEAT_POSITIONS[idx] || SEAT_POSITIONS[0]
+            const occupant = seatedPlayers.find(p => p.seatIndex === idx)
+            if (occupant) {
+              return (
+                <PlayerSeat
+                  key={occupant.id}
+                  player={occupant}
+                  isMe={occupant.id === playerId}
+                  isCurrentTurn={room?.status === 'playing' && currentTurnPlayerId === occupant.id}
+                  position={pos}
+                />
+              )
+            }
+            // Show open seat only if current player isn't already seated
+            if (!isSeated && hasEnteredName) {
+              return <EmptySeat key={`empty-${idx}`} seatIndex={idx} position={pos} onClick={sitAtSeat} />
+            }
+            return null
           })}
-          {/* Table center: deck + discard OR deal button */}
+          {/* Table center: deck + discard OR deal button OR seat prompt */}
           <div className="table-center">
-            {(!room || room.status === 'idle' || room.status === 'scored') ? (
+            {!isSeated && hasEnteredName ? (
+              <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.6)' }}>
+                <div style={{ fontSize: '1.1rem', fontWeight: 600, marginBottom: 4 }}>Choose Your Seat</div>
+                <div style={{ fontSize: '0.8rem' }}>Click an open seat to sit down</div>
+              </div>
+            ) : (!room || room.status === 'idle' || room.status === 'scored') ? (
               <button
                 className="btn-primary"
                 onClick={newRound}
@@ -750,7 +806,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
                   <span className="discard-label">Discard</span>
                 </div>
               </>
-            )}
+            ))}
           </div>
         </div>
       </div>
