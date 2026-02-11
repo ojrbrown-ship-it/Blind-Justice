@@ -359,31 +359,44 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
   }
 
   // ---------- MANUAL DEAL ----------
-  const newRound = async () => {
-    try {
-      const seated = players.filter(p => p.seatedAt > 0)
-      if (seated.length < 1) { setMessage('Need at least 1 player to deal.'); return }
-      const deck = shuffle(buildThreeDecks(), nanoid(8))
-      const { deck: remaining, hands, tiplu, discard } = dealInitial(deck, seated.length)
-      await runTransaction(db, async (tx) => {
-        const pRef = doc(playersRef, targetPlayerId);
-        const snap = await tx.get(pRef);
-        const pData = snap.data();
-        const updatedMelds = pData.melds.map(m => {
-          if (m.id === meldId) return { ...m, cards: combinedCards };
-          return m;
-        });
-        tx.update(pRef, { melds: updatedMelds });
+const newRound = async () => {
+  try {
+    const seated = players.filter(p => p.seatedAt > 0);
+    if (seated.length < 1) { setMessage('Need at least 1 player to deal.'); return; }
 
-      const myRef = doc(playersRef, playerId);
-      const newHand = meState.hand.filter(c => !handSel.some(s => s.id === c.id));
-      tx.update(myRef, { hand: newHand });
+    const deck = shuffle(buildThreeDecks(), nanoid(8));
+    const { deck: remaining, hands, tiplu, discard } = dealInitial(deck, seated.length);
+
+    await runTransaction(db, async (tx) => {
+      // Update room
+      tx.update(roomRef, {
+        status: 'playing',
+        tiplu,
+        tipluPublicAtGrace: false,
+        deck: remaining,
+        discard,
+        turnIndex: 0,
+        startedAt: Date.now(),
+        deckSeed: nanoid(10),
+      });
+
+      // Deal hands to each seated player
+      seated.forEach((pl, idx) => {
+        tx.update(doc(playersRef, pl.id), {
+          hand: hands[idx],
+          melds: [],
+          isRevealed: false,
+          hasDrawnThisTurn: false,
+          tennalaDeclared: false,
+          graceDone: false,
+        });
+      });
     });
-    
+
     setHandSel([]);
-    setMessage("");
-  } catch (err) {
-    setMessage("Update failed.");
+    setMessage('');
+  } catch (e) {
+    setMessage('Failed to start a new round: ' + (e?.message ?? e));
   }
 };
         tx.update(roomRef, {
