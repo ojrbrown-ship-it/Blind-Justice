@@ -1,65 +1,80 @@
 // src/App.jsx
 import React, { useEffect, useState } from 'react'
-import { signInAnonymously, onAuthStateChanged } from 'firebase/auth'
+import { signInAnonymously } from 'firebase/auth'
 import { auth, db } from './firebase'
 import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore'
 import MarriageRummyOnline from './game/MarriageRummyOnline.jsx'
 import { nanoid } from 'nanoid'
 
-const PERSISTENT_ROOM_ID = 'TABLE-1'   // rename if you want a different fixed ID
-const DEFAULT_STACK = 250              // chips on sit-down
+const PERSISTENT_ROOM_ID = 'TABLE-1'
+const DEFAULT_STACK = 250
 
 export default function App() {
-  const [user, setUser] = useState(null)
   const [ready, setReady] = useState(false)
   const [displayName, setDisplayName] = useState('')
+  const [error, setError] = useState('')
 
-  // Keep a stable display name in localStorage
+  // Keep a stable display name
   useEffect(() => {
-    const existing = localStorage.getItem('bj_name')
-    if (existing) setDisplayName(existing)
-    else {
-      const name = `Player-${nanoid(4)}`
+    let name = localStorage.getItem('bj_name')
+    if (!name) {
+      name = `Player-${nanoid(4)}`
       localStorage.setItem('bj_name', name)
-      setDisplayName(name)
     }
+    setDisplayName(name)
   }, [])
 
-  // Auto sign-in and ensure the single room exists
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (u) => {
-      if (!u) {
-        await signInAnonymously(auth)
-        return
+    (async () => {
+      try {
+        // 1) Ensure anonymous sign-in first (deterministic)
+        if (!auth.currentUser) {
+          console.log('[Auth] signing in anonymously…')
+          await signInAnonymously(auth)
+        }
+        console.log('[Auth] signed in as', auth.currentUser?.uid)
+
+        // 2) Ensure the single persistent room exists
+        const roomRef = doc(db, 'rooms', PERSISTENT_ROOM_ID)
+        const snap = await getDoc(roomRef)
+        if (!snap.exists()) {
+          console.log('[Room] creating TABLE-1')
+          await setDoc(roomRef, {
+            createdAt: Date.now(),
+            ownerId: auth.currentUser.uid,
+            status: 'lobby',         // lobby | playing | grace | scored
+            tiplu: null,
+            tipluPublicAtGrace: false,
+            maxPlayers: 5,
+            deckSeed: nanoid(10),
+            deck: [],
+            discard: [],
+            turnIndex: 0
+          })
+        } else if (!snap.data().ownerId) {
+          await updateDoc(roomRef, { ownerId: auth.currentUser.uid })
+        }
+
+        // 3) Ready to render the table
+        setReady(true)
+        console.log('[App] ready, navigating to TABLE-1')
+      } catch (e) {
+        console.error('[Boot error]', e)
+        setError(e?.message || String(e))
       }
-      setUser(u)
-      // Ensure persistent room document exists (create once, keep reusing)
-      const roomRef = doc(db, 'rooms', PERSISTENT_ROOM_ID)
-      const snap = await getDoc(roomRef)
-      if (!snap.exists()) {
-        await setDoc(roomRef, {
-          createdAt: Date.now(),
-          ownerId: u.uid,          // first to arrive becomes owner; not critical
-          status: 'lobby',         // lobby | playing | grace | scored
-          tiplu: null,
-          tipluPublicAtGrace: false,
-          maxPlayers: 5,
-          deckSeed: nanoid(10),
-          deck: [],
-          discard: [],
-          turnIndex: 0
-        })
-      } else {
-        // Optional: if ownerId empty/invalid, adopt current user as owner
-        const data = snap.data()
-        if (!data.ownerId) await updateDoc(roomRef, { ownerId: u.uid })
-      }
-      setReady(true)
-    })
-    return () => unsub()
+    })()
   }, [])
 
-  if (!ready || !user || !displayName) {
+  if (error) {
+    return (
+      <div className="container">
+        <h1>Blind Justice (Online)</h1>
+        <p className="pill danger">Boot error: {error}</p>
+      </div>
+    )
+  }
+
+  if (!ready || !displayName) {
     return (
       <div className="container">
         <h1>Blind Justice (Online)</h1>
@@ -68,6 +83,6 @@ export default function App() {
     )
   }
 
-  // Straight to the single table
+  // Straight to the single table; player stack gets set to 250 when seated inside the room component
   return <MarriageRummyOnline roomId={PERSISTENT_ROOM_ID} displayName={displayName} defaultChips={DEFAULT_STACK} />
 }
