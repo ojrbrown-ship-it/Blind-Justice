@@ -317,46 +317,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
 
   const meState = players.find(p => p.id === playerId)
 
-  // ---------- AUTO-DEAL ----------
-  useEffect(() => {
-    if (!room) return
-    const seated = players.filter(p => p.seatedAt > 0)
-    if (seated.length < 1) return
-    if (room.status === 'playing') return
-
-    const autoStart = async () => {
-      try {
-        const deck = shuffle(buildThreeDecks(), room.deckSeed || nanoid(8))
-        const { deck: remaining, hands, tiplu, discard } = dealInitial(deck, seated.length)
-        await runTransaction(db, async (tx) => {
-          tx.update(roomRef, {
-            status: 'playing',
-            tiplu,
-            tipluPublicAtGrace: false,
-            deck: remaining,
-            discard,
-            turnIndex: 0,
-            startedAt: Date.now(),
-          })
-          seated.forEach((pl, idx) => {
-            tx.update(doc(playersRef, pl.id), {
-              hand: hands[idx],
-              melds: [],
-              isRevealed: false,
-              hasDrawnThisTurn: false,
-              tennalaDeclared: false,
-              graceDone: false
-            })
-          })
-        })
-      } catch (e) {
-        console.error('[Auto-start error]', e)
-        setMessage('Failed to start round: ' + (e?.message || e))
-      }
-    }
-    autoStart()
-  }, [room, players])
-
+  // ---------- MANUAL DEAL ----------
   const newRound = async () => {
     try {
       const seated = players.filter(p => p.seatedAt > 0)
@@ -752,32 +713,44 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
               />
             )
           })}
-          {/* Table center: deck + discard */}
+          {/* Table center: deck + discard OR deal button */}
           <div className="table-center">
-            <div className="deck-area">
-              <div
-                className="playing-card card-back"
-                onClick={() => drawFrom('stock')}
-                style={{ cursor: isMyTurn && !meState?.hasDrawnThisTurn ? 'pointer' : 'default' }}
-                role="button"
-                aria-label="Draw from stock"
-              />
-              <span className="deck-label">{deckCount} left</span>
-            </div>
-            <div className="discard-area">
-              {topDiscard ? (
-                <PlayingCard
-                  card={topDiscard}
-                  onClick={() => drawFrom('discard')}
-                  wild={tipluVisibleToMe && room?.tiplu && isWildCard(topDiscard, room.tiplu)}
-                />
-              ) : (
-                <div className="playing-card" style={{ opacity: 0.3, cursor: 'default' }}>
-                  <span style={{ color: 'var(--muted)', fontSize: '0.7rem' }}>Empty</span>
+            {(!room || room.status === 'idle' || room.status === 'scored') ? (
+              <button
+                className="btn-primary"
+                onClick={newRound}
+                style={{ padding: '14px 32px', fontSize: '1.1rem', borderRadius: 12, letterSpacing: '0.02em' }}
+              >
+                {room?.status === 'scored' ? 'Deal New Round' : 'Deal Cards'}
+              </button>
+            ) : (
+              <>
+                <div className="deck-area">
+                  <div
+                    className="playing-card card-back"
+                    onClick={() => drawFrom('stock')}
+                    style={{ cursor: isMyTurn && !meState?.hasDrawnThisTurn ? 'pointer' : 'default' }}
+                    role="button"
+                    aria-label="Draw from stock"
+                  />
+                  <span className="deck-label">{deckCount} left</span>
                 </div>
-              )}
-              <span className="discard-label">Discard</span>
-            </div>
+                <div className="discard-area">
+                  {topDiscard ? (
+                    <PlayingCard
+                      card={topDiscard}
+                      onClick={() => drawFrom('discard')}
+                      wild={tipluVisibleToMe && room?.tiplu && isWildCard(topDiscard, room.tiplu)}
+                    />
+                  ) : (
+                    <div className="playing-card" style={{ opacity: 0.3, cursor: 'default' }}>
+                      <span style={{ color: 'var(--muted)', fontSize: '0.7rem' }}>Empty</span>
+                    </div>
+                  )}
+                  <span className="discard-label">Discard</span>
+                </div>
+              </>
+            )}
           </div>
         </div>
       </div>
