@@ -405,7 +405,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
             graceDone: false
           })
         })
-      })
+      }
     } catch (e) {
       setMessage('Failed to start a new round: ' + (e?.message || e))
     }
