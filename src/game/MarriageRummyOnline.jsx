@@ -1,6 +1,7 @@
 // src/game/MarriageRummyOnline.jsx
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { db } from '../firebase'
+import { enableNetwork } from 'firebase/firestore'
 import {
   collection, doc, onSnapshot, setDoc, updateDoc, getDoc, runTransaction
 } from 'firebase/firestore'
@@ -24,6 +25,17 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
   const [bootError, setBootError] = useState('')
 
   const creatingRoom = useRef(false)
+
+  // Handle browser online/offline and nudge Firestore back online
+useEffect(() => {
+  const onUp = async () => {
+    try {
+      await enableNetwork(db)
+    } catch {}
+  }
+  window.addEventListener('online', onUp)
+  return () => window.removeEventListener('online', onUp)
+}, [])
 
   // Subscribe to the room. If it doesn't exist, create it here.
   useEffect(() => {
@@ -72,7 +84,11 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
       },
       (err) => {
         console.error('[Room snapshot error]', err)
-        setBootError(err?.message || 'Failed to read table document.')
+        const msg = err?.message || 'Failed to read table document.'
+        const hint = msg.includes('offline')
+          ? ' (hint: your network may block WebSockets; we’ve switched to HTTP long‑polling, try refreshing, or check ad‑block / firewall settings)'
+          : ''
+        setBootError(msg + hint)
         setRoom(null)
       }
     )
