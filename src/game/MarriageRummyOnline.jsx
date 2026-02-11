@@ -39,6 +39,34 @@ function sortHand(hand, tiplu, isRevealed) {
   })
 }
 
+const remainingInHand = meState.hand.length - handSel.length;
+if (remainingInHand < 1) {
+  setMessage("Failsafe: You must keep at least one card to discard.");
+  return;
+}
+
+const targetPlayer = players.find(p => p.id === targetPlayerId);
+const targetMeld = targetPlayer?.melds?.find(m => m.id === meldId);
+if (!targetMeld) return;
+
+const combinedCards = [...targetMeld.cards, ...handSel];
+  const tiplu = room.tiplu;
+  const revealed = targetPlayer.isRevealed; 
+  
+  let isValid = false;
+  if (targetMeld.kind === 'sequence') {
+    isValid = isSequence(combinedCards, revealed, tiplu);
+  } else if (targetMeld.kind === 'rankset') {
+    isValid = isRankSet(combinedCards, revealed, tiplu);
+  } else if (targetMeld.kind === 'identical') {
+    isValid = isIdenticalSet(combinedCards);
+  }
+
+  if (!isValid) {
+    setMessage(`Invalid: These cards do not fit the ${targetMeld.kind}.`);
+    return;
+  }
+
 // ===================== CARD COMPONENT =====================
 
 function PlayingCard({ card, selected, wild, onClick, mini, faceDown }) {
@@ -144,7 +172,6 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
   const roomRef = doc(db, 'rooms', roomId)
   const playersRef = collection(roomRef, 'players')
 
-  const [room, setRoom] = useState(null)
   const [players, setPlayers] = useState([])
   const [handSel, setHandSel] = useState([])
   const [message, setMessage] = useState('')
@@ -237,7 +264,6 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
   const MAX_SEATS = room?.maxPlayers || 5
   const [hasEnteredName, setHasEnteredName] = useState(false)
 
-  const meState = players.find(p => p.id === playerId)
   const isSeated = meState && meState.seatedAt > 0
 
   // If reconnecting and already seated, skip the name entry screen
@@ -339,6 +365,26 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
       const deck = shuffle(buildThreeDecks(), nanoid(8))
       const { deck: remaining, hands, tiplu, discard } = dealInitial(deck, seated.length)
       await runTransaction(db, async (tx) => {
+        const pRef = doc(playersRef, targetPlayerId);
+        const snap = await tx.get(pRef);
+        const pData = snap.data();
+        const updatedMelds = pData.melds.map(m => {
+          if (m.id === meldId) return { ...m, cards: combinedCards };
+          return m;
+        });
+        tx.update(pRef, { melds: updatedMelds });
+
+      const myRef = doc(playersRef, playerId);
+      const newHand = meState.hand.filter(c => !handSel.some(s => s.id === c.id));
+      tx.update(myRef, { hand: newHand });
+    });
+    
+    setHandSel([]);
+    setMessage("");
+  } catch (err) {
+    setMessage("Update failed.");
+  }
+};
         tx.update(roomRef, {
           status: 'playing',
           tiplu,
@@ -462,6 +508,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
 
   const layMeld = async (kind) => {
     if (!meState || !selectedCards.length) return
+    if (!meState || !handSel.length) return;
     const cards = selectedCards
     const revealed = meState.isRevealed
     const tiplu = room.tiplu
@@ -472,7 +519,49 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
     if (kind === 'identical') ok = isIdenticalSet(cards)
     if (kind === 'rankset') ok = isRankSet(cards, revealed, tiplu)
     if (kind === 'sequence') ok = isSequence(cards, revealed, tiplu)
-    if (!ok) { setMessage('Invalid meld for the current phase.'); return }
+    if (!ok) { setMessage('Invalid meld for the current phase.'); return
+    if (meState.hand.length - handSel.length === 0) {
+      setMessage("Failsafe: You must keep one card to discard.");
+      return;
+    }
+
+    const cards = [...handSel];
+  const revealed = meState.isRevealed;
+  const tiplu = room.tiplu;
+
+  let ok = false;
+  if (kind === 'identical') ok = isIdenticalSet(cards);
+  if (kind === 'rankset') ok = isRankSet(cards, revealed, tiplu);
+  if (kind === 'sequence') ok = isSequence(cards, revealed, tiplu);
+
+  if (!ok) {
+    setMessage("Invalid " + kind);
+    return;
+  }
+
+  try {
+    await runTransaction(db, async (tx) => {
+      const pRef = doc(playersRef, playerId);
+      const meD = (await tx.get(pRef)).data();
+      const remaining = meD.hand.filter(c => !cards.some(x => x.id === c.id));
+      const meld = { id: nanoid(6), kind, cards };
+      const newMelds = [...meD.melds, meld];
+      
+      let willReveal = meD.isRevealed;
+      if (!meD.isRevealed) {
+        const credits = newMelds.reduce((s, m) => s + revealCreditsForMeld(m, false), 0);
+        if (credits >= 3) willReveal = true;
+      }
+      
+      tx.update(pRef, { hand: remaining, melds: newMelds, isRevealed: willReveal });
+    });
+    setHandSel([]);
+    setMessage("");
+  } catch (e) {
+    setMessage("Lay meld failed.");
+  }
+};
+     }
 
     // Grace constraints for unrevealed players
     if (inGrace && !revealed) {
@@ -533,6 +622,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
 
   const addToExistingMeld = async (targetPlayerId, meldId) => {
     if (handSel.length !== 1) return; // Usually you add one card at a time
+    if (!meState || handSel.length === 0) return;
   
     const cardToAdd = handSel[0];
     const targetPlayer = players.find(p => p.id === targetPlayerId);
@@ -651,7 +741,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
     if (!meState?.hand) return;
     const sorted = sortHand(meState.hand, room.tiplu, meState.isRevealed);
     await updateDoc(doc(playersRef, playerId), { hand: sorted });
-  }, [meState?.hand, room?.tiplu, meState?.isRevealed])
+  }, [meState, room, playerId])
 
   const handleReorder = async (newOrder) => {
     // Update local state immediately for smoothness, then Firestore
@@ -855,6 +945,29 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
             )
           })}
           {!seatedPlayers.length && <span className="muted" style={{ fontSize: '0.85rem' }}>No players seated.</span>}
+        </div>
+        <div className="player-melds">
+          <MeldsDisplay 
+            melds={p.melds} 
+            tiplu={room?.tiplu} 
+            onMeldClick={(meldId) => {
+              // Only allow clicking if it's my turn and I've drawn a card
+              if (isMyTurn && meState?.hasDrawnThisTurn) {
+                addToExistingMeld(p.id, meldId);
+              }
+            }} 
+          />
+        </div>
+        <div className="my-melds-area">
+          <MeldsDisplay 
+            melds={meState?.melds || []} 
+            tiplu={room?.tiplu} 
+            onMeldClick={(meldId) => {
+              if (isMyTurn && meState?.hasDrawnThisTurn) {
+                addToExistingMeld(playerId, meldId);
+              }
+            }} 
+          />
         </div>
       </div>
 
