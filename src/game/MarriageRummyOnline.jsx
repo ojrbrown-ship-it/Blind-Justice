@@ -14,13 +14,10 @@ import { suitName, suitColour } from './types'
 
 // ---------- Helpers for seat geometry ----------
 function seatPosition(index, total) {
-  // Return top/left (percent) for player i around a circle
+  // place seats around a circle (index 0 at top)
   const angle = (index / total) * 2 * Math.PI - Math.PI / 2
-  const r = 42 // radius offset (% of half-table)
-  const cx = 50, cy = 50
-  // scale to fit the circle nicely
-  const x = cx + 35 * Math.cos(angle)
-  const y = cy + 35 * Math.sin(angle)
+  const x = 50 + 35 * Math.cos(angle)
+  const y = 50 + 35 * Math.sin(angle)
   return { top: `${y}%`, left: `${x}%` }
 }
 
@@ -62,8 +59,8 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
             try {
               await setDoc(roomRef, {
                 createdAt: Date.now(),
-                ownerId: playerId,          // not used, but kept
-                status: 'idle',             // idle | playing | grace | scored
+                ownerId: playerId,             // not used now, but harmless
+                status: 'idle',                // idle | playing | grace | scored
                 tiplu: null,
                 tipluPublicAtGrace: false,
                 maxPlayers: 5,
@@ -112,7 +109,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
       (qs) => {
         const arr = []
         qs.forEach(d => arr.push({ id: d.id, ...d.data() }))
-        // show seated first (seatedAt > 0), then others by joined time
+        // Show seated first (seatedAt > 0), then by joined time
         arr.sort((a,b)=> (b.seatedAt>0) - (a.seatedAt>0) || (a.joinedAt||0) - (b.joinedAt||0))
         setPlayers(arr)
       },
@@ -124,7 +121,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
     return () => unsub()
   }, [roomId])
 
-  // Sit down (write without reading; resilient even if SDK is briefly "offline")
+  // Sit down (no read first; resilient to transient "offline")
   useEffect(() => {
     if (!playerId || !room) return
     const sitDown = async () => {
@@ -164,7 +161,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
     }
   }
 
-  // Sit/Leave controls (useful to force distinct seats in two windows)
+  // Sit/Leave explicit controls (handy to force a fresh seat in any tab)
   const sitSeat = async () => {
     try {
       await setDoc(doc(playersRef, playerId), {
@@ -194,16 +191,15 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
   // ---------- AUTO‑DEAL ----------
   useEffect(() => {
     if (!room) return
-    // Change "1" to "2" if you want to auto‑deal only when at least two players are seated.
+    // NOTE: change "< 1" to "< 2" if you want to require two seats.
     const seated = players.filter(p => p.seatedAt > 0)
     if (seated.length < 1) return
     if (room.status === 'playing') return
 
     const autoStart = async () => {
       try {
-        const p = seated
         const deck = shuffle(buildThreeDecks(), room.deckSeed || nanoid(8))
-        const { deck: remaining, hands, tiplu, discard } = dealInitial(deck, p.length)
+        const { deck: remaining, hands, tiplu, discard } = dealInitial(deck, seated.length)
         await runTransaction(db, async (tx) => {
           tx.update(roomRef, {
             status: 'playing',
@@ -214,7 +210,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
             turnIndex: 0,
             startedAt: Date.now(),
           })
-          p.forEach((pl, idx) => {
+          seated.forEach((pl, idx) => {
             tx.update(doc(playersRef, pl.id), {
               hand: hands[idx],
               melds: [],
@@ -451,14 +447,11 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
         <input value={nameDraft} onChange={e=>setNameDraft(e.target.value)} placeholder="Your name" style={{minWidth: 220}} />
         <button onClick={saveName}>Save name</button>
         <button onClick={newRound}>New round</button>
-        <span className="pill" title={playerId}>ID: {playerId.slice(0,8)}…</span>
+        <span className="pill" title={playerId}>Seat ID: {playerId.slice(0,12)}…</span>
         <button onClick={sitSeat}>Sit</button>
         <button onClick={leaveSeat}>Leave</button>
         <span className="pill">Status: {room?.status || '—'}</span>
-        <span className="pill">Tiplu: { (room?.tiplu && (meState?.isRevealed || room?.tipluPublicAtGrace)) ? `${room.tiplu.rank}${suitName(room.tiplu.suit)}` : 'Hidden' }</span>
-        {meState && (
-          <span className="pill">{meState.name || 'Me'} — {meState.isRevealed ? 'Revealed' : 'Blind'}</span>
-        )}
+        <span className="pill">Tiplu: { (room?.tiplu && (players.find(p=>p.id===playerId)?.isRevealed || room?.tipluPublicAtGrace)) ? `${room.tiplu.rank}${suitName(room.tiplu.suit)}` : 'Hidden' }</span>
       </div>
 
       {/* The table view */}
@@ -500,11 +493,11 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
 
       {/* My hand + melds */}
       <div className="panel" style={{marginTop:12}}>
-        <h3>My hand ({(meState?.hand||[]).length})</h3>
+        <h3>My hand ({(players.find(p=>p.id===playerId)?.hand||[]).length})</h3>
         <MyHand
-          meState={meState}
+          meState={players.find(p=>p.id===playerId)}
           tiplu={room?.tiplu}
-          showWild={meState?.isRevealed || tipluVisibleToAll}
+          showWild={players.find(p=>p.id===playerId)?.isRevealed || tipluVisibleToAll}
           handSel={handSel}
           addToSel={addToSel}
           removeFromSel={removeFromSel}
@@ -513,7 +506,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
 
       <div className="panel" style={{marginTop:12}}>
         <h3>My melds</h3>
-        <Melds melds={meState?.melds || []} tiplu={room?.tiplu} />
+        <Melds melds={players.find(p=>p.id===playerId)?.melds || []} tiplu={room?.tiplu} />
       </div>
 
       {!!message && <p className="pill danger" style={{marginTop:8}}>{message}</p>}
@@ -525,8 +518,8 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
             <button onClick={()=>drawFrom('discard')} disabled={!isMyTurn}>Take top discard</button>
             <button onClick={()=>layMeld('sequence')}>Lay Sequence</button>
             <button onClick={()=>layMeld('identical')}>Lay Identical (3)</button>
-            <button onClick={()=>layMeld('rankset')} disabled={!meState?.isRevealed}>Lay Rank Set</button>
-            <button onClick={declareTennala} disabled={meState?.tennalaDeclared}>Declare Tennala</button>
+            <button onClick={()=>layMeld('rankset')} disabled={!players.find(p=>p.id===playerId)?.isRevealed}>Lay Rank Set</button>
+            <button onClick={declareTennala} disabled={players.find(p=>p.id===playerId)?.tennalaDeclared}>Declare Tennala</button>
             <button onClick={()=>discard(handSel[0])} disabled={!isMyTurn || handSel.length!==1}>Discard selected</button>
             <button onClick={clearSel}>Clear selection</button>
           </>
@@ -535,7 +528,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
           <>
             <span className="pill">Grace phase — Tiplu is public</span>
             <button onClick={()=>layMeld('sequence')}>Lay Sequence (≥4 if unrevealed)</button>
-            <button onClick={()=>updateDoc(doc(playersRef, playerId), { graceDone: true })} className="pill">Done</button>
+            <button onClick={markGraceDone} className="pill">Done</button>
             <button onClick={clearSel}>Clear selection</button>
           </>
         )}
