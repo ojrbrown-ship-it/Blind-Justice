@@ -1,6 +1,6 @@
 // src/game/MarriageRummyOnline.jsx
 import React, { useEffect, useMemo, useState } from 'react'
-import { db, auth } from '../firebase'
+import { db } from '../firebase'
 import {
   collection, doc, onSnapshot, setDoc, updateDoc, getDoc, runTransaction
 } from 'firebase/firestore'
