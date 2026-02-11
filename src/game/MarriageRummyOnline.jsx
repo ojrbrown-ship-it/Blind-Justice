@@ -806,7 +806,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
                   <span className="discard-label">Discard</span>
                 </div>
               </>
-            ))}
+            )}
           </div>
         </div>
       </div>
