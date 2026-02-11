@@ -1,5 +1,5 @@
 // src/game/MarriageRummyOnline.jsx
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { db } from '../firebase'
 import {
   collection, doc, onSnapshot, setDoc, updateDoc, getDoc, runTransaction
@@ -12,68 +12,139 @@ import {
 } from './engine'
 import { suitName, suitColour } from './types'
 
-export default function MarriageRummyOnline({ roomId, displayName, defaultChips = 250 }) {
+export default function MarriageRummyOnline({ roomId, displayName, defaultChips = 250, playerId }) {
   const roomRef = doc(db, 'rooms', roomId)
   const playersRef = collection(roomRef, 'players')
-  const me = auth.currentUser
 
   const [room, setRoom] = useState(null)
   const [players, setPlayers] = useState([])
-  const [handSel, setHandSel] = useState([])     // selected card ids from my hand
+  const [handSel, setHandSel] = useState([])
   const [message, setMessage] = useState('')
+  const [bootMsg, setBootMsg] = useState('Connecting to table…')
+  const [bootError, setBootError] = useState('')
 
-  // Subscribe to room + players
+  const creatingRoom = useRef(false)
+
+  // Subscribe to the room. If it doesn't exist, create it here.
   useEffect(() => {
-    const unsubRoom = onSnapshot(roomRef, (s) => setRoom(s.exists() ? s.data() : null))
-    const unsubPlayers = onSnapshot(playersRef, (qs) => {
-      const arr = []
-      qs.forEach(d => arr.push({ id: d.id, ...d.data() }))
-      arr.sort((a,b)=> (a.joinedAt||0) - (b.joinedAt||0))
-      setPlayers(arr)
-    })
-    return () => { unsubRoom(); unsubPlayers() }
+    setBootMsg('Connecting to table…')
+    setBootError('')
+
+    const unsub = onSnapshot(
+      roomRef,
+      async (snap) => {
+        if (!snap.exists()) {
+          if (!creatingRoom.current) {
+            creatingRoom.current = true
+            setBootMsg('Table not found — creating it now…')
+            try {
+              await setDoc(roomRef, {
+                createdAt: Date.now(),
+                ownerId: playerId,       // first visitor becomes owner
+                status: 'lobby',         // lobby | playing | grace | scored
+                tiplu: null,
+                tipluPublicAtGrace: false,
+                maxPlayers: 5,
+                deckSeed: nanoid(10),
+                deck: [],
+                discard: [],
+                turnIndex: 0
+              })
+              setBootMsg('Table created.')
+            } catch (e) {
+              console.error('[Room create error]', e)
+              setBootError(
+                e?.message ||
+                'Failed to create table. Check Firestore rules & project env.'
+              )
+            } finally {
+              creatingRoom.current = false
+            }
+          } else {
+            setBootMsg('Waiting for table to become available…')
+          }
+          setRoom(null)
+        } else {
+          setRoom(snap.data())
+          setBootMsg('')
+          setBootError('')
+        }
+      },
+      (err) => {
+        console.error('[Room snapshot error]', err)
+        setBootError(err?.message || 'Failed to read table document.')
+        setRoom(null)
+      }
+    )
+
+    return () => unsub()
+  }, [roomId, playerId])
+
+  // Subscribe to players
+  useEffect(() => {
+    const unsub = onSnapshot(
+      playersRef,
+      (qs) => {
+        const arr = []
+        qs.forEach(d => arr.push({ id: d.id, ...d.data() }))
+        arr.sort((a,b)=> (a.joinedAt||0) - (b.joinedAt||0))
+        setPlayers(arr)
+      },
+      (err) => {
+        console.error('[Players snapshot error]', err)
+        setBootError(err?.message || 'Failed to read players collection.')
+      }
+    )
+    return () => unsub()
   }, [roomId])
 
-  // Sit down: ensure my player doc exists AND reset chips to the default stack
+  // Sit down: ensure my player doc exists & reset chips on each visit
   useEffect(() => {
-    if (!me || !room) return
+    if (!playerId || !room) return
     const sitDown = async () => {
-      const myRef = doc(playersRef, me.uid)
-      const snap = await getDoc(myRef)
-      const base = {
-        name: displayName,
-        joinedAt: Date.now(),
-        isReady: false,
-        isRevealed: false,
-        hasDrawnThisTurn: false,
-        melds: [],
-        hand: [],
-        tennalaDeclared: false,
-        graceDone: false,
-        chips: defaultChips,       // reset on sit-down
-        seatedAt: Date.now()
-      }
-      if (!snap.exists()) {
-        await setDoc(myRef, base)
-      } else {
-        // Always reset stack on (re)join so players arrive with 250
-        await updateDoc(myRef, {
+      try {
+        const myRef = doc(playersRef, playerId)
+        const snap = await getDoc(myRef)
+        const base = {
           name: displayName,
+          joinedAt: Date.now(),
+          isReady: false,
+          isRevealed: false,
+          hasDrawnThisTurn: false,
+          melds: [],
+          hand: [],
+          tennalaDeclared: false,
+          graceDone: false,
           chips: defaultChips,
           seatedAt: Date.now()
-        })
+        }
+        if (!snap.exists()) {
+          await setDoc(myRef, base)
+        } else {
+          await updateDoc(myRef, {
+            name: displayName,
+            chips: defaultChips,
+            seatedAt: Date.now()
+          })
+        }
+      } catch (e) {
+        console.error('[Sit down error]', e)
+        setBootError(e?.message || 'Failed to seat player.')
       }
     }
     sitDown()
-  }, [me, room, displayName, defaultChips])
+  }, [playerId, room, displayName, defaultChips])
 
-  const iAmOwner = room && me && room.ownerId === me.uid
-  const meState = players.find(p => p.id === me?.uid)
+  const iAmOwner = room && playerId && room.ownerId === playerId
+  const meState = players.find(p => p.id === playerId)
 
   // ---------- Lobby actions ----------
   const toggleReady = async () => {
-    const myRef = doc(playersRef, me.uid)
-    await updateDoc(myRef, { isReady: !meState?.isReady })
+    try {
+      await updateDoc(doc(playersRef, playerId), { isReady: !meState?.isReady })
+    } catch (e) {
+      setMessage('Failed to toggle ready: ' + (e?.message || e))
+    }
   }
 
   const startGame = async () => {
@@ -83,8 +154,6 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
     const deck = shuffle(buildThreeDecks(), room.deckSeed || nanoid(8))
     const { deck: remaining, hands, tiplu, discard } = dealInitial(deck, p.length)
     await runTransaction(db, async (tx) => {
-      const rDoc = await tx.get(roomRef)
-      if (!rDoc.exists()) throw new Error('Room missing')
       tx.update(roomRef, {
         status: 'playing',
         tiplu,
@@ -95,8 +164,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
         startedAt: Date.now(),
       })
       p.forEach((pl, idx) => {
-        const ref = doc(playersRef, pl.id)
-        tx.update(ref, {
+        tx.update(doc(playersRef, pl.id), {
           hand: hands[idx],
           melds: [],
           isRevealed: false,
@@ -115,7 +183,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
     return players[idx].id
   }, [room, players])
 
-  const isMyTurn = room?.status==='playing' && currentTurnPlayerId === me?.uid
+  const isMyTurn = room?.status==='playing' && currentTurnPlayerId === playerId
   const tipluVisibleToAll = room?.status === 'grace' && room?.tipluPublicAtGrace
 
   const selectedCards = useMemo(() => {
@@ -132,9 +200,8 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
   const drawFrom = async (source) => {
     if (!isMyTurn) return
     await runTransaction(db, async (tx) => {
-      const rDoc = await tx.get(roomRef)
-      const pDoc = await tx.get(doc(playersRef, me.uid))
-      const r = rDoc.data(), meD = pDoc.data()
+      const r = (await tx.get(roomRef)).data()
+      const meD = (await tx.get(doc(playersRef, playerId))).data()
       if (meD.hasDrawnThisTurn) return
       let card = null
       if (source==='stock') {
@@ -148,7 +215,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
         card = discard.pop()
         tx.update(roomRef, { discard })
       }
-      tx.update(doc(playersRef, me.uid), {
+      tx.update(doc(playersRef, playerId), {
         hand: [...meD.hand, card],
         hasDrawnThisTurn: true
       })
@@ -158,9 +225,9 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
   const discard = async (cardId) => {
     if (!isMyTurn) return
     await runTransaction(db, async (tx) => {
-      const rDoc = await tx.get(roomRef)
-      const pDoc = await tx.get(doc(playersRef, me.uid))
-      const r = rDoc.data(), meD = pDoc.data()
+      const r = (await tx.get(roomRef)).data()
+      const meSnap = await tx.get(doc(playersRef, playerId))
+      const meD = meSnap.data()
       if (!meD.hasDrawnThisTurn) throw new Error('Must draw before discarding')
       const idx = meD.hand.findIndex(c => c.id === cardId)
       const [card] = meD.hand.splice(idx,1)
@@ -173,7 +240,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
           turnIndex: (r.turnIndex + 1) % players.length
         })
       })
-      tx.update(doc(playersRef, me.uid), {
+      tx.update(doc(playersRef, playerId), {
         hand: meD.hand,
         hasDrawnThisTurn: false,
         ...(imOut ? { graceDone: true } : {})
@@ -193,21 +260,16 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
     if (kind==='sequence') ok = isSequence(cards, revealed, tiplu)
     if (!ok) { setMessage('Invalid meld for the current phase.'); return }
     await runTransaction(db, async (tx) => {
-      const pRef = doc(playersRef, me.uid)
-      const pSnap = await tx.get(pRef)
-      const meD = pSnap.data()
-      // remove from hand
+      const pRef = doc(playersRef, playerId)
+      const meD = (await tx.get(pRef)).data()
       const remaining = meD.hand.filter(c => !cards.some(x => x.id===c.id))
       const meld = { id: nanoid(6), kind, cards }
       const newMelds = [...meD.melds, meld]
-
-      // Reveal credits (R1 Option A)
       let willReveal = meD.isRevealed
       if (!meD.isRevealed) {
         const credits = newMelds.reduce((s, m) => s + revealCreditsForMeld(m, false, tiplu), 0)
         if (credits >= 3) willReveal = true
       }
-
       tx.update(pRef, {
         hand: remaining,
         melds: newMelds,
@@ -219,7 +281,6 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
 
   const declareTennala = async () => {
     if (!meState || meState.tennalaDeclared) return
-    // Detect any 3 identical in hand
     const hand = meState.hand
     const byKey = {}
     for (const c of hand) {
@@ -231,7 +292,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
     if (!entry) { setMessage('You don’t hold a Tennala.'); return }
     const three = entry.slice(0,3)
     await runTransaction(db, async (tx) => {
-      const pRef = doc(playersRef, me.uid)
+      const pRef = doc(playersRef, playerId)
       const meD = (await tx.get(pRef)).data()
       if (meD.tennalaDeclared) return
       const remaining = meD.hand.filter(c => !three.some(x => x.id===c.id))
@@ -241,27 +302,19 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
         melds: [...meD.melds, meld],
         tennalaDeclared: true
       })
-      // Immediate 10-chip per opponent to me
-      const others = players.filter(pl => pl.id !== me.uid)
+      const others = players.filter(pl => pl.id !== playerId)
       for (const o of others) {
         const oRef = doc(playersRef, o.id)
         const oD = (await tx.get(oRef)).data()
         tx.update(oRef, { chips: (oD.chips||0) - 10 })
       }
-      const meSnap = await tx.get(pRef)
-      const meNow = meSnap.data()
+      const meNow = (await tx.get(pRef)).data()
       tx.update(pRef, { chips: (meNow.chips||0) + (others.length * 10) })
     })
   }
 
-  // ---------- Grace handling ----------
+  // ---------- Grace ----------
   const inGrace = room?.status === 'grace'
-
-  const markGraceDone = async () => {
-    const pRef = doc(playersRef, me.uid)
-    await updateDoc(pRef, { graceDone: true })
-  }
-
   useEffect(() => {
     if (!inGrace) return
     const allDone = players.every(p => p.graceDone || p.hand.length===0)
@@ -270,101 +323,124 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
     }
   }, [inGrace, players, room])
 
+  const markGraceDone = async () => {
+    await updateDoc(doc(playersRef, playerId), { graceDone: true })
+  }
+
   const scoreRound = async () => {
     await runTransaction(db, async (tx) => {
-      const rDoc = await tx.get(roomRef)
-      const r = rDoc.data()
+      const r = (await tx.get(roomRef)).data()
       if (r.status !== 'grace') return
-
-      // Collect latest player states
-      const snapPlayers = await Promise.all(players.map(pl => tx.get(doc(playersRef, pl.id))))
-      const pStates = snapPlayers.map(s => ({ id: s.id, ...s.data() }))
-
-      // Side transfers (holders include melded + in-hand)
+      const snaps = await Promise.all(players.map(pl => tx.get(doc(playersRef, pl.id))))
+      const pStates = snaps.map(s => ({ id: s.id, ...s.data() }))
       const holdings = pStates.map(p => ({ id: p.id, name: p.name, holding: flattenHoldings(p) }))
       const side = sidePayments(holdings, r.tiplu)
-
-      // Ledger balances
       const balances = Object.fromEntries(pStates.map(p => [p.id, p.chips || 0]))
-      for (const t of side) {
-        balances[t.from] -= t.amount
-        balances[t.to]   += t.amount
-      }
-
-      // Winner = the one who went out (empty hand)
+      for (const t of side) { balances[t.from] -= t.amount; balances[t.to] += t.amount }
       const winner = pStates.find(p => p.hand.length===0) || pStates[0]
-
-      // Hand penalties to the winner
       for (const p of pStates) {
         if (p.id === winner.id) continue
-        const points = deadwoodPointsForPlayer(p.hand, r.tiplu) // wilds=0 for all at end
+        const points = deadwoodPointsForPlayer(p.hand, r.tiplu)
         const chips = chipsFromDeadwood(points)
         balances[p.id] -= chips
         balances[winner.id] += chips
       }
-
-      // Persist chip balances + summary
       pStates.forEach(p => tx.update(doc(playersRef, p.id), { chips: balances[p.id] }))
       tx.update(roomRef, { status: 'scored', lastSummaryAt: Date.now(), lastSide: side })
     })
   }
 
   // ---------- UI ----------
-  if (!room) {
-    return <div className="container"><p>Loading table…</p></div>
-  }
-
-  if (room.status === 'lobby') {
-    return (
-      <div className="container">
-        <h2>Table: {roomId}</h2>
-        <p className="muted">You’re seated with {players.length} player(s). Everyone starts with {defaultChips} chips on sit‑down.</p>
-        <div className="panel">
-          {players.map(p => (
-            <div key={p.id} className="row" style={{justifyContent:'space-between'}}>
-              <div>{p.name || p.id.slice(0,6)}</div>
-              <div className={`pill ${p.isReady?'success':''}`}>{p.isReady?'Ready':'Not ready'}</div>
-            </div>
-          ))}
-        </div>
-        <div className="row" style={{marginTop:12}}>
-          <button onClick={toggleReady}>{meState?.isReady ? 'Unready' : 'Ready up'}</button>
-          {iAmOwner && <button onClick={startGame} disabled={!players.every(p => p.isReady)}>Start game</button>}
-        </div>
-      </div>
-    )
-  }
-
-  if (room.status === 'scored') {
-    return (
-      <div className="container">
-        <h2>Round summary</h2>
-        <Summary room={room} players={players} />
-        <div className="row" style={{marginTop:16}}>
-          {/* Return to lobby for next hand; chips persist until next sit-down */}
-          <button onClick={()=>updateDoc(roomRef, { status:'lobby', tiplu:null, tipluPublicAtGrace:false, deck:[], discard:[], turnIndex:0 })}>
-            Back to lobby (same table)
-          </button>
-        </div>
-      </div>
-    )
-  }
-
   return (
     <div className="container">
+      <h1>Blind Justice (Online)</h1>
+
+      {(bootMsg || bootError) && (
+        <p className={`pill ${bootError ? 'danger' : 'muted'}`}>
+          {bootError ? `Boot error: ${bootError}` : bootMsg}
+        </p>
+      )}
+
+      {!room ? (
+        <p className="muted">Loading table…</p>
+      ) : room.status === 'lobby' ? (
+        <Lobby
+          roomId={roomId}
+          players={players}
+          meState={meState}
+          defaultChips={defaultChips}
+          iAmOwner={iAmOwner}
+          startGame={startGame}
+          toggleReady={toggleReady}
+        />
+      ) : room.status === 'scored' ? (
+        <Scored room={room} players={players} roomRef={roomRef} />
+      ) : (
+        <Playing
+          room={room}
+          players={players}
+          meState={meState}
+          currentTurnPlayerId={players[(room.turnIndex||0)%players.length]?.id}
+          tipluVisibleToAll={room.status==='grace' && room.tipl uPublicAtGrace}
+          drawFrom={drawFrom}
+          layMeld={layMeld}
+          declareTennala={declareTennala}
+          discard={discard}
+          isMyTurn={isMyTurn}
+          handSel={handSel}
+          addToSel={addToSel}
+          removeFromSel={removeFromSel}
+          clearSel={clearSel}
+          markGraceDone={markGraceDone}
+          message={message}
+          tiplu={room.tiplu}
+        />
+      )}
+    </div>
+  )
+}
+
+function Lobby({ roomId, players, meState, defaultChips, iAmOwner, startGame, toggleReady }) {
+  return (
+    <>
+      <h2>Table: {roomId}</h2>
+      <p className="muted">You’re seated with {players.length} player(s). Everyone starts with {defaultChips} chips on sit‑down.</p>
+      <div className="panel">
+        {players.map(p => (
+          <div key={p.id} className="row" style={{justifyContent:'space-between'}}>
+            <div>{p.name || p.id.slice(0,6)}</div>
+            <div className={`pill ${p.isReady?'success':''}`}>{p.isReady?'Ready':'Not ready'}</div>
+          </div>
+        ))}
+      </div>
+      <div className="row" style={{marginTop:12}}>
+        <button onClick={toggleReady}>{meState?.isReady ? 'Unready' : 'Ready up'}</button>
+        {iAmOwner && <button onClick={startGame} disabled={!players.every(p => p.isReady)}>Start game</button>}
+      </div>
+    </>
+  )
+}
+
+function Playing({
+  room, players, meState, currentTurnPlayerId, tipluVisibleToAll,
+  drawFrom, layMeld, declareTennala, discard, isMyTurn,
+  handSel, addToSel, removeFromSel, clearSel, markGraceDone, message, tiplu
+}) {
+  return (
+    <>
       <Header
         room={room}
         players={players}
         meState={meState}
-        currentTurnPlayerId={room.status==='playing' ? players[(room.turnIndex||0)%players.length]?.id : null}
+        currentTurnPlayerId={currentTurnPlayerId}
         tipluVisibleToAll={tipluVisibleToAll}
       />
 
-      <AllMeldsBoard players={players} tiplu={room.tiplu} />
+      <AllMeldsBoard players={players} tiplu={tiplu} />
 
       <MyHand
         meState={meState}
-        tiplu={room.tiplu}
+        tiplu={tiplu}
         showWild={meState?.isRevealed || tipluVisibleToAll}
         handSel={handSel}
         addToSel={addToSel}
@@ -373,7 +449,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
 
       <div className="panel" style={{marginTop:12}}>
         <h3>My melds</h3>
-        <Melds melds={meState?.melds || []} tiplu={room.tiplu} />
+        <Melds melds={meState?.melds || []} tiplu={tiplu} />
       </div>
 
       {message && <p className="pill danger">{message}</p>}
@@ -388,7 +464,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
             <button onClick={()=>layMeld('rankset')} disabled={!meState?.isRevealed}>Lay Rank Set</button>
             <button onClick={declareTennala} disabled={meState?.tennalaDeclared}>Declare Tennala</button>
             <button onClick={()=>discard(handSel[0])} disabled={!isMyTurn || handSel.length!==1}>Discard selected</button>
-            <button onClick={()=>setHandSel([])}>Clear selection</button>
+            <button onClick={clearSel}>Clear selection</button>
           </>
         )}
         {room.status==='grace' && (
@@ -396,11 +472,25 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
             <span className="pill">Grace phase — Tiplu is public</span>
             <button onClick={()=>layMeld('sequence')}>Lay Sequence (≥4 if unrevealed)</button>
             <button onClick={markGraceDone} className="success">Done</button>
-            <button onClick={()=>setHandSel([])}>Clear selection</button>
+            <button onClick={clearSel}>Clear selection</button>
           </>
         )}
       </div>
-    </div>
+    </>
+  )
+}
+
+function Scored({ room, players, roomRef }) {
+  return (
+    <>
+      <h2>Round summary</h2>
+      <Summary room={room} players={players} />
+      <div className="row" style={{marginTop:16}}>
+        <button onClick={()=>updateDoc(roomRef, { status:'lobby', tiplu:null, tipluPublicAtGrace:false, deck:[], discard:[], turnIndex:0 })}>
+          Back to lobby (same table)
+        </button>
+      </div>
+    </>
   )
 }
 
@@ -428,7 +518,6 @@ function Header({ room, players, meState, currentTurnPlayerId, tipluVisibleToAll
   )
 }
 
-// Everyone can see all laid melds (by player)
 function AllMeldsBoard({ players, tiplu }) {
   return (
     <div className="panel">
@@ -491,13 +580,9 @@ function Melds({ melds, tiplu }) {
 
 function Summary({ room, players }) {
   const side = room.lastSummaryAt ? (room.lastSide || []) : []
-  // Net totals per player for display (under the hood we already applied atomic transfers)
   const nets = {}
   for (const p of players) nets[p.id] = 0
-  for (const t of side) {
-    nets[t.from] -= t.amount
-    nets[t.to]   += t.amount
-  }
+  for (const t of side) { nets[t.from] -= t.amount; nets[t.to] += t.amount }
   return (
     <>
       <h3>Side transfers (netted)</h3>
