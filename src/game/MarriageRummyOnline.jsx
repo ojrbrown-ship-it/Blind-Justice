@@ -172,6 +172,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
   const roomRef = doc(db, 'rooms', roomId)
   const playersRef = collection(roomRef, 'players')
 
+  const [room, setRoom] = useState(null);
   const [players, setPlayers] = useState([])
   const [handSel, setHandSel] = useState([])
   const [message, setMessage] = useState('')
@@ -425,11 +426,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
   const isMyTurn = room?.status === 'playing' && currentTurnPlayerId === playerId
   const tipluVisibleToMe = meState?.isRevealed || (room?.status === 'grace' && room?.tipluPublicAtGrace)
 
-  const selectedCards = useMemo(() => {
-    if (!meState) return []
-    const byId = Object.fromEntries((meState.hand || []).map(c => [c.id, c]))
-    return handSel.map(id => byId[id]).filter(Boolean)
-  }, [handSel, meState])
+  const selectedCards = handSel;
 
   const toggleSel = useCallback((id) => {
     setHandSel(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
