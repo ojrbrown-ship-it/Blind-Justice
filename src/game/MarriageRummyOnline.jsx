@@ -211,23 +211,36 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
     return () => unsub()
   }, [roomId])
 
-  // Sit down
+  // Sit down — only create the player doc if it doesn't already exist
+  const hasSatDown = useRef(false)
   useEffect(() => {
     if (!playerId || !room) return
+    if (hasSatDown.current) return
     const sitDown = async () => {
       try {
-        await setDoc(doc(playersRef, playerId), {
-          name: displayName,
-          joinedAt: Date.now(),
-          isRevealed: false,
-          hasDrawnThisTurn: false,
-          melds: [],
-          hand: [],
-          tennalaDeclared: false,
-          graceDone: false,
-          chips: defaultChips,
-          seatedAt: Date.now()
-        }, { merge: true })
+        const existing = await getDoc(doc(playersRef, playerId))
+        if (existing.exists()) {
+          // Player doc already exists — just update the name if needed, don't touch hand/melds
+          await setDoc(doc(playersRef, playerId), {
+            name: displayName,
+            seatedAt: existing.data().seatedAt || Date.now()
+          }, { merge: true })
+        } else {
+          // First time — create fresh player doc
+          await setDoc(doc(playersRef, playerId), {
+            name: displayName,
+            joinedAt: Date.now(),
+            isRevealed: false,
+            hasDrawnThisTurn: false,
+            melds: [],
+            hand: [],
+            tennalaDeclared: false,
+            graceDone: false,
+            chips: defaultChips,
+            seatedAt: Date.now()
+          })
+        }
+        hasSatDown.current = true
       } catch (e) {
         console.error('[Sit down error]', e)
         setBootError((e?.message || 'Failed to seat player.'))
@@ -294,6 +307,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
         turnIndex: 0
       })
       setHandSel([])
+      hasSatDown.current = false
       setMessage('Table has been reset.')
       setTimeout(() => setMessage(''), 3000)
     } catch (e) {
