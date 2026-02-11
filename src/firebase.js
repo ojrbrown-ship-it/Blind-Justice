@@ -1,7 +1,5 @@
-// src/firebase.js
 import { initializeApp } from 'firebase/app'
 import {
-  getFirestore,
   initializeFirestore,
   enableIndexedDbPersistence,
   enableNetwork
@@ -20,19 +18,12 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig)
 
-// Force HTTP long‑polling (works through strict proxies) and disable fetch streams
+// Force HTTP long‑polling & disable fetch streams for restrictive networks
 export const db = initializeFirestore(app, {
   experimentalForceLongPolling: true,
   useFetchStreams: false,
   ignoreUndefinedProperties: true
 })
 
-// Optional but nice: enable local cache so reads work if the wire drops
-enableIndexedDbPersistence(db).catch(() => {
-  // If persistence fails (e.g., Safari private windows), just ignore and continue
-})
-
-// Explicitly (re)enable the network on boot — avoids “client is offline”
-enableNetwork(db).catch(() => {
-  // If it errors here, we’ll retry from the UI logic
-})
+enableIndexedDbPersistence(db).catch(() => {})
+enableNetwork(db).catch(() => {})

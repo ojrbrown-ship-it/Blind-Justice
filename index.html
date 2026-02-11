@@ -5,21 +5,44 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Blind Justice</title>
     <style>
-      :root { color-scheme: light dark; }
-      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin:0; background:#f7f7f7; color:#111; }
+      :root { color-scheme: light dark; --bg:#f7f7f7; --card:#fff; --ink:#111; --muted:#666; --pill:#eee; --accent:#0078D4; --danger:#d83b01; --ok:#107c10; }
+      @media (prefers-color-scheme: dark) {
+        :root { --bg:#0f1115; --card:#151821; --ink:#f3f3f3; --muted:#9aa0a6; --pill:#1d2430; --accent:#5aa7ff; --danger:#ff5f4a; --ok:#57d685; }
+      }
+      html, body { height:100%; }
+      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin:0; background:var(--bg); color:var(--ink); }
+      h1, h2, h3 { margin: 0 0 8px; }
       .container { max-width: 1100px; margin: 0 auto; padding: 16px; }
-      button { cursor: pointer; }
-      .grid { display:grid; gap:12px; }
-      .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-      .card { border:1px solid #bbb; padding:6px 8px; border-radius:6px; background:#fff; color:#111; }
+      .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+      .panel { border:1px solid #00000020; border-radius:10px; padding:12px; background:var(--card); }
+      .pill { padding:4px 10px; border-radius:999px; background:var(--pill); border:1px solid #00000010; }
+      .muted { color:var(--muted); }
+      .danger { background: #ffeaea; color:#8b0000; border-color:#efb0b0; }
+      @media (prefers-color-scheme: dark) { .danger { background:#3a0f0f; color:#ffd1cf; border-color:#5c2222; } }
+      button { cursor:pointer; padding:8px 12px; border-radius:8px; border:1px solid #00000020; background:var(--card); color:var(--ink); }
+      button:hover { outline: 2px solid #00000010; }
+      input { padding:8px 10px; border-radius:8px; border:1px solid #00000030; background:var(--card); color:var(--ink); }
+      /* Cards / melds */
+      .card { border:1px solid #00000020; padding:6px 8px; border-radius:6px; background:var(--card); color:var(--ink); }
       .wild { outline: 2px solid #e67e22; }
-      .meld { border:1px dashed #888; padding:6px; border-radius:6px; background:#fff; }
-      .pill { padding:2px 8px; border-radius:999px; border:1px solid #aaa; background:#fff; }
-      .danger { background:#ffecec; border-color:#ff8e8e; }
-      .success { background:#e7ffe7; border-color:#8eff8e; }
-      .muted { opacity:.75 }
-      .panel { border:1px solid #ddd; border-radius:8px; padding:12px; background:#fff; }
-      .fixedbar { position:sticky; bottom:0; display:flex; gap:8px; padding:8px; background:#fff; border-top:1px solid #ddd; }
+      /* Fixed action bar */
+      .fixedbar { position:sticky; bottom:0; display:flex; gap:8px; padding:8px; background:var(--card); border-top:1px solid #00000020; z-index:5; }
+      /* Circular table */
+      .tableWrap { position:relative; width:100%; aspect-ratio: 1.8 / 1; display:flex; justify-content:center; align-items:center; }
+      .table { width:min(90vw, 740px); aspect-ratio:1/1; border-radius:50%; background:
+        radial-gradient(ellipse at center, #0b5 0%, #084 60%, #063 100%); border:12px solid #542; box-shadow: 0 8px 30px #00000030 inset; position:relative; }
+      .seat { position:absolute; display:flex; gap:6px; align-items:center; translate:-50% -50%; }
+      .seat .avatar { width:42px; height:42px; border-radius:50%; background:var(--pill); border:2px solid #00000030; display:grid; place-items:center; font-weight:700; }
+      .seat .tag { display:flex; flex-direction:column; gap:2px; }
+      .seat .tag .name { font-weight:700; }
+      .seat.me .avatar { border-color: var(--accent); box-shadow:0 0 0 2px var(--accent) inset; }
+      .seat .meta { font-size:12px; }
+      /* Seat positions (max 8 nicely spaced; more will wrap evenly) */
+      /* We'll compute positions in JS and set style.left/top inline for precise layout. */
+      @media (max-width: 720px) {
+        .table { width: 92vw; }
+        .seat .tag { display:none; } /* compact on small screens */
+      }
     </style>
   </head>
   <body>
