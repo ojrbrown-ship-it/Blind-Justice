@@ -114,42 +114,41 @@ useEffect(() => {
     return () => unsub()
   }, [roomId])
 
-  // Sit down: ensure my player doc exists & reset chips on each visit
-  useEffect(() => {
-    if (!playerId || !room) return
-    const sitDown = async () => {
-      try {
-        const myRef = doc(playersRef, playerId)
-        const snap = await getDoc(myRef)
-        const base = {
-          name: displayName,
-          joinedAt: Date.now(),
-          isReady: false,
-          isRevealed: false,
-          hasDrawnThisTurn: false,
-          melds: [],
-          hand: [],
-          tennalaDeclared: false,
-          graceDone: false,
-          chips: defaultChips,
-          seatedAt: Date.now()
-        }
-        if (!snap.exists()) {
-          await setDoc(myRef, base)
-        } else {
-          await updateDoc(myRef, {
-            name: displayName,
-            chips: defaultChips,
-            seatedAt: Date.now()
-          })
-        }
-      } catch (e) {
-        console.error('[Sit down error]', e)
-        setBootError(e?.message || 'Failed to seat player.')
+  // Sit down: write my player doc unconditionally (merge) and reset chips to default.
+// This works even if the SDK thinks it's offline (it will queue and sync later).
+useEffect(() => {
+  if (!playerId || !room) return
+
+  const sitDown = async () => {
+    try {
+      const myRef = doc(playersRef, playerId)
+      const base = {
+        name: displayName,
+        // baseline state for a fresh seat
+        joinedAt: Date.now(),
+        isReady: false,
+        isRevealed: false,
+        hasDrawnThisTurn: false,
+        melds: [],
+        hand: [],
+        tennalaDeclared: false,
+        graceDone: false,
+        chips: defaultChips,     // reset stack on every sit-down (as requested)
+        seatedAt: Date.now()
       }
+      await setDoc(myRef, base, { merge: true })   // <-- key change: write without reading first
+    } catch (e) {
+      console.error('[Sit down error]', e)
+      setBootError((e?.message || 'Failed to seat player.') +
+        (String(e?.message || '').includes('offline')
+          ? ' (hint: network may block WebSockets; we fall back to HTTP and queue this write locally)'
+          : '')
+      )
     }
-    sitDown()
-  }, [playerId, room, displayName, defaultChips])
+  }
+
+  sitDown()
+}, [playerId, room, displayName, defaultChips])
 
   const iAmOwner = room && playerId && room.ownerId === playerId
   const meState = players.find(p => p.id === playerId)
