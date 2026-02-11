@@ -1,0 +1,18 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+
+    match /rooms/{roomId} {
+      allow read: if true;            // open read for lobby and game state
+      allow create: if signedIn();
+      allow update, delete: if signedIn();
+
+      match /players/{playerId} {
+        allow read: if true;
+        allow create: if signedIn() && request.auth.uid == playerId;
+        allow update, delete: if signedIn() && request.auth.uid == playerId;
+      }
+    }
+  }
+}

@@ -1,185 +1,522 @@
-import React, { useEffect, useState } from "react";
-import { initializeApp, getApps, getApp } from "firebase/app";
-import { getDatabase, ref, update, onValue, set } from "firebase/database";
-import { motion, Reorder } from "framer-motion";
+import React, { useEffect, useMemo, useState } from 'react'
+import { db, auth } from '../firebase'
+import {
+  collection, doc, onSnapshot, setDoc, updateDoc, getDoc, runTransaction
+} from 'firebase/firestore'
+import { nanoid } from 'nanoid'
+import {
+  buildThreeDecks, shuffle, dealInitial, isIdenticalSet, isRankSet, isSequence,
+  isWildCard, revealCreditsForMeld, deadwoodPointsForPlayer, chipsFromDeadwood,
+  sidePayments, flattenHoldings
+} from './engine'
+import { suitName, suitColour } from './types'
 
-const env = import.meta.env || {};
-const FIREBASE_CONFIG = {
-  apiKey:            env.VITE_FIREBASE_API_KEY,
-  authDomain:        env.VITE_FIREBASE_AUTH_DOMAIN,
-  databaseURL:       env.VITE_FIREBASE_DATABASE_URL,
-  projectId:         env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket:     env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId:             env.VITE_FIREBASE_APP_ID,
-};
+export default function MarriageRummyOnline({ roomId, displayName }) {
+  const roomRef = doc(db, 'rooms', roomId)
+  const playersRef = collection(roomRef, 'players')
+  const me = auth.currentUser
 
-const app = getApps().length ? getApp() : initializeApp(FIREBASE_CONFIG);
-const db  = getDatabase(app);
+  const [room, setRoom] = useState(null)
+  const [players, setPlayers] = useState([])
+  const [handSel, setHandSel] = useState([])     // selected card ids from my hand
+  const [message, setMessage] = useState('')
 
-const SUITS = ["♠", "♥", "♦", "♣"];
-const RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"];
+  // Subscribe to room + players
+  useEffect(() => {
+    const unsubRoom = onSnapshot(roomRef, (s) => setRoom(s.exists() ? s.data() : null))
+    const unsubPlayers = onSnapshot(playersRef, (qs) => {
+      const arr = []
+      qs.forEach(d => arr.push({ id: d.id, ...d.data() }))
+      arr.sort((a,b)=> (a.joinedAt||0) - (b.joinedAt||0))
+      setPlayers(arr)
+    })
+    return () => { unsubRoom(); unsubPlayers() }
+  }, [roomId])
 
-const UI = {
-  bg: "#0f172a", felt: "#14532d", panel: "#1e293b", text: "#f1f5f9",
-  accent: "#fbbf24", danger: "#ef4444", success: "#22c55e",
-  card: {
-    base: {
-      background: "white", borderRadius: "6px", display: "flex",
-      flexDirection: "column", alignItems: "center", justifyContent: "center",
-      boxShadow: "0 2px 5px rgba(0,0,0,0.3)", userSelect: "none", cursor: "grab",
-    },
-    lg: { width: 62, height: 88 }, md: { width: 50, height: 72 }
+  // Join on mount if not present
+  useEffect(() => {
+    if (!me || !room) return
+    const ensurePlayer = async () => {
+      const myRef = doc(playersRef, me.uid)
+      const snap = await getDoc(myRef)
+      if (!snap.exists()) {
+        await setDoc(myRef, {
+          name: displayName,
+          joinedAt: Date.now(),
+          isReady: false,
+          isRevealed: false,
+          hasDrawnThisTurn: false,
+          melds: [],
+          hand: [],
+          tennalaDeclared: false,
+          graceDone: false,
+          chips: 0
+        })
+      }
+    }
+    ensurePlayer()
+  }, [me, roomId, room, displayName])
+
+  const iAmOwner = room && me && room.ownerId === me.uid
+  const meState = players.find(p => p.id === me?.uid)
+
+  // ---------- Lobby actions ----------
+  const toggleReady = async () => {
+    const myRef = doc(playersRef, me.uid)
+    await updateDoc(myRef, { isReady: !meState?.isReady })
   }
-};
 
-const getRankIdx = (r) => RANKS.indexOf(r);
+  const startGame = async () => {
+    if (!iAmOwner) return
+    const p = players
+    if (p.length < 2 || p.length > 5) { setMessage('Need 2–5 players to start.'); return }
+    const deck = shuffle(buildThreeDecks(), room.deckSeed || nanoid(8))
+    const { deck: remaining, hands, tiplu, discard } = dealInitial(deck, p.length)
+    await runTransaction(db, async (tx) => {
+      const rDoc = await tx.get(roomRef)
+      if (!rDoc.exists()) throw new Error('Room missing')
+      tx.update(roomRef, {
+        status: 'playing',
+        tiplu,
+        tipluPublicAtGrace: false,
+        deck: remaining,
+        discard,
+        turnIndex: 0,
+        startedAt: Date.now(),
+      })
+      p.forEach((pl, idx) => {
+        const ref = doc(playersRef, pl.id)
+        tx.update(ref, {
+          hand: hands[idx],
+          melds: [],
+          isRevealed: false,
+          hasDrawnThisTurn: false,
+          tennalaDeclared: false,
+          graceDone: false
+        })
+      })
+    })
+  }
 
-export default function MarriageRummyOnline() {
-  const [meName, setMeName] = useState(localStorage.getItem("mr_name") || "");
-  const [meSeat, setMeSeat] = useState(null);
-  const [room, setRoom] = useState(null);
-  const [localHand, setLocalHand] = useState([]);
-  const [selectedCard, setSelectedCard] = useState(null);
+  // ---------- Helpers ----------
+  const currentTurnPlayerId = useMemo(() => {
+    if (!room || !players.length) return null
+    const idx = room.turnIndex % players.length
+    return players[idx].id
+  }, [room, players])
 
-  const ROOM_ID = "global_room_v3";
+  const isMyTurn = room?.status==='playing' && currentTurnPlayerId === me?.uid
+  const tipluVisibleToAll = room?.status === 'grace' && room?.tipluPublicAtGrace
+
+  const selectedCards = useMemo(() => {
+    if (!meState) return []
+    const byId = Object.fromEntries(meState.hand.map(c => [c.id, c]))
+    return handSel.map(id => byId[id]).filter(Boolean)
+  }, [handSel, meState])
+
+  const addToSel = (id) => setHandSel(prev => prev.includes(id) ? prev : [...prev, id])
+  const removeFromSel = (id) => setHandSel(prev => prev.filter(x => x!==id))
+  const clearSel = () => setHandSel([])
+
+  // ---------- Turn actions ----------
+  const drawFrom = async (source) => {
+    if (!isMyTurn) return
+    await runTransaction(db, async (tx) => {
+      const rDoc = await tx.get(roomRef)
+      const pDoc = await tx.get(doc(playersRef, me.uid))
+      const r = rDoc.data(), meD = pDoc.data()
+      if (meD.hasDrawnThisTurn) return
+      let card = null
+      if (source==='stock') {
+        const deck = r.deck.slice()
+        if (!deck.length) throw new Error('Deck empty (very rare)')
+        card = deck.pop()
+        tx.update(roomRef, { deck })
+      } else {
+        const discard = r.discard.slice()
+        if (!discard.length) throw new Error('No discard to take')
+        card = discard.pop()
+        tx.update(roomRef, { discard })
+      }
+      tx.update(doc(playersRef, me.uid), {
+        hand: [...meD.hand, card],
+        hasDrawnThisTurn: true
+      })
+    })
+  }
+
+  const discard = async (cardId) => {
+    if (!isMyTurn) return
+    await runTransaction(db, async (tx) => {
+      const rDoc = await tx.get(roomRef)
+      const pDoc = await tx.get(doc(playersRef, me.uid))
+      const r = rDoc.data(), meD = pDoc.data()
+      if (!meD.hasDrawnThisTurn) throw new Error('Must draw before discarding')
+      const idx = meD.hand.findIndex(c => c.id === cardId)
+      const [card] = meD.hand.splice(idx,1)
+      const newDiscard = r.discard.slice()
+      newDiscard.push(card)
+      const imOut = meD.hand.length===0
+      tx.update(roomRef, {
+        discard: newDiscard,
+        ...(imOut ? { status: 'grace', tipluPublicAtGrace: true, graceStartedAt: Date.now() } : {
+          turnIndex: (r.turnIndex + 1) % players.length
+        })
+      })
+      tx.update(doc(playersRef, me.uid), {
+        hand: meD.hand,
+        hasDrawnThisTurn: false,
+        ...(imOut ? { graceDone: true } : {})
+      })
+    })
+    clearSel()
+  }
+
+  const layMeld = async (kind) => {
+    if (!meState || !selectedCards.length) return
+    const cards = selectedCards
+    const revealed = meState.isRevealed
+    const tiplu = room.tiplu
+    let ok = false
+    if (kind==='identical') ok = isIdenticalSet(cards)
+    if (kind==='rankset') ok = isRankSet(cards, revealed, tiplu)
+    if (kind==='sequence') ok = isSequence(cards, revealed, tiplu)
+    if (!ok) { setMessage('Invalid meld for the current phase.'); return }
+    await runTransaction(db, async (tx) => {
+      const pRef = doc(playersRef, me.uid)
+      const pSnap = await tx.get(pRef)
+      const meD = pSnap.data()
+      // remove from hand
+      const remaining = meD.hand.filter(c => !cards.some(x => x.id===c.id))
+      const meld = { id: nanoid(6), kind, cards }
+      const newMelds = [...meD.melds, meld]
+
+      // compute reveal credits with R1 Option A (floor(len/3) for sequences; identical=1; rankset=1 only post-reveal)
+      let willReveal = meD.isRevealed
+      if (!meD.isRevealed) {
+        const credits = newMelds.reduce((s, m) => s + revealCreditsForMeld(m, false, tiplu), 0)
+        if (credits >= 3) willReveal = true
+      }
+
+      tx.update(pRef, {
+        hand: remaining,
+        melds: newMelds,
+        isRevealed: willReveal
+      })
+    })
+    clearSel()
+  }
+
+  const declareTennala = async () => {
+    if (!meState || meState.tennalaDeclared) return
+    // Must be before your first pickup in the hand; we assume if you haven't drawn yet this round.
+    const hand = meState.hand
+    const byKey = {}
+    for (const c of hand) {
+      const k = `${c.rank}${c.suit}`
+      byKey[k] = byKey[k] || []
+      byKey[k].push(c)
+    }
+    const entry = Object.values(byKey).find(arr => arr.length >= 3)
+    if (!entry) { setMessage('You don’t hold a Tennala.'); return }
+    const three = entry.slice(0,3)
+    await runTransaction(db, async (tx) => {
+      const pRef = doc(playersRef, me.uid)
+      const meD = (await tx.get(pRef)).data()
+      if (meD.tennalaDeclared) return
+      const remaining = meD.hand.filter(c => !three.some(x => x.id===c.id))
+      const meld = { id: nanoid(6), kind:'identical', cards: three, tag:'TENNALA' }
+      tx.update(pRef, {
+        hand: remaining,
+        melds: [...meD.melds, meld],
+        tennalaDeclared: true
+      })
+      // immediate chip side-payments: 10 from each other player to me
+      const others = players.filter(pl => pl.id !== me.uid)
+      for (const o of others) {
+        const oRef = doc(playersRef, o.id)
+        const oD = (await tx.get(oRef)).data()
+        tx.update(oRef, { chips: (oD.chips||0) - 10 })
+      }
+      const meSnap = await tx.get(pRef)
+      const meNow = meSnap.data()
+      tx.update(pRef, { chips: (meNow.chips||0) + (others.length * 10) })
+    })
+  }
+
+  // ---------- Grace handling ----------
+  const inGrace = room?.status === 'grace'
+
+  const markGraceDone = async () => {
+    const pRef = doc(playersRef, me.uid)
+    await updateDoc(pRef, { graceDone: true })
+  }
 
   useEffect(() => {
-    const unsub = onValue(ref(db, `rooms/${ROOM_ID}`), (snap) => {
-      const data = snap.val();
-      if (data) {
-        setRoom(data);
-        if (meSeat !== null && data.players?.[meSeat]?.hand) {
-          if (data.players[meSeat].hand.length !== localHand.length) {
-            setLocalHand(data.players[meSeat].hand);
-          }
-        }
-      }
-    });
-    return () => unsub();
-  }, [meSeat, localHand.length]);
+    if (!inGrace) return
+    const allDone = players.every(p => p.graceDone || p.hand.length===0)
+    if (allDone && iAmOwner && room.status==='grace') {
+      scoreRound()
+    }
+  }, [inGrace, players, room])
 
-  if (!room || !room.phase) {
-    return (
-      <div style={{ background: UI.bg, height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'white' }}>
-        <h2>Blind Justice Online</h2>
-        <button onClick={() => set(ref(db, `rooms/${ROOM_ID}`), { phase: "LOBBY", players: Array(5).fill({name:"", chips:250}) })} style={btnStyle(UI.success)}>Create Table</button>
-      </div>
-    );
+  const scoreRound = async () => {
+    await runTransaction(db, async (tx) => {
+      const rDoc = await tx.get(roomRef)
+      const r = rDoc.data()
+      if (r.status !== 'grace') return
+
+      // Collect latest player states
+      const snapPlayers = await Promise.all(players.map(pl => tx.get(doc(playersRef, pl.id))))
+      const pStates = snapPlayers.map(s => ({ id: s.id, ...s.data() }))
+
+      // Side transfers (holders include melded + in-hand)
+      const holdings = pStates.map(p => ({ id: p.id, name: p.name, holding: flattenHoldings(p) }))
+      const side = sidePayments(holdings, r.tiplu)
+
+      // Ledger balances
+      const balances = Object.fromEntries(pStates.map(p => [p.id, p.chips || 0]))
+      for (const t of side) {
+        balances[t.from] -= t.amount
+        balances[t.to]   += t.amount
+      }
+
+      // Winner = the one who went out (empty hand)
+      const winner = pStates.find(p => p.hand.length===0) || pStates[0]
+
+      // Hand penalties to the winner
+      for (const p of pStates) {
+        if (p.id === winner.id) continue
+        const points = deadwoodPointsForPlayer(p.hand, r.tiplu) // wilds=0 for all at end
+        const chips = chipsFromDeadwood(points)
+        balances[p.id] -= chips
+        balances[winner.id] += chips
+      }
+
+      // Persist chip balances + summary
+      pStates.forEach(p => tx.update(doc(playersRef, p.id), { chips: balances[p.id] }))
+      tx.update(roomRef, { status: 'scored', lastSummaryAt: Date.now(), lastSide: side })
+    })
   }
 
-  const myP = room.players?.[meSeat];
-  const isMyTurn = room.phase === "PLAY" && room.turn === meSeat;
+  // ---------- UI ----------
+  if (!room) {
+    return <div className="container"><p>Loading room…</p></div>
+  }
 
-  const handleSort = () => {
-    const sorted = [...localHand].sort((a, b) => {
-      const cardA = room.deck[a];
-      const cardB = room.deck[b];
-      if (cardA.suit !== cardB.suit) return SUITS.indexOf(cardA.suit) - SUITS.indexOf(cardB.suit);
-      return getRankIdx(cardA.rank) - getRankIdx(cardB.rank);
-    });
-    setLocalHand(sorted);
-  };
-
-  const updateRemoteHand = async (newOrder) => {
-    setLocalHand(newOrder);
-    if (meSeat !== null) {
-      await update(ref(db, `rooms/${ROOM_ID}/players/${meSeat}`), { hand: newOrder });
-    }
-  };
-
-  const handleDiscard = async () => {
-    if (!isMyTurn || !myP?.hasPicked || !selectedCard) return;
-    const newHand = localHand.filter(id => id !== selectedCard);
-    const newDiscard = [...(room.discard || []), selectedCard];
-    const activePlayers = room.players.filter(p => p.name);
-    const myActiveIdx = activePlayers.findIndex(p => p.seat === meSeat);
-    const nextPlayer = activePlayers[(myActiveIdx + 1) % activePlayers.length];
-    
-    setSelectedCard(null);
-    await update(ref(db, `rooms/${ROOM_ID}`), {
-      [`players/${meSeat}/hand`]: newHand,
-      [`players/${meSeat}/hasPicked`]: false,
-      discard: newDiscard,
-      turn: nextPlayer.seat
-    });
-  };
-
-  const handlePickup = async (src) => {
-    if (!isMyTurn || myP?.hasPicked) return;
-    const cardId = src === "STOCK" ? room.stock[0] : room.discard[room.discard.length - 1];
-    const newHand = [...localHand, cardId];
-    const updates = { 
-      [`players/${meSeat}/hand`]: newHand,
-      [`players/${meSeat}/hasPicked`]: true 
-    };
-    if (src === "STOCK") updates.stock = room.stock.slice(1);
-    else updates.discard = room.discard.slice(0, -1);
-    await update(ref(db, `rooms/${ROOM_ID}`), updates);
-  };
-
-  return (
-    <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: UI.bg, color: UI.text, fontFamily: 'sans-serif' }}>
-      <div style={{ padding: "10px 20px", display: "flex", justifyContent: "space-between", alignItems: 'center', background: "rgba(0,0,0,0.5)" }}>
-        <h2 style={{margin:0, fontSize: 18}}>Blind Justice</h2>
-        <div style={{display:'flex', gap: 10}}>
-            <button onClick={handleSort} style={btnStyle(UI.panel)}>Sort Hand</button>
-            {isMyTurn && myP?.hasPicked && (
-                <button onClick={handleDiscard} disabled={!selectedCard} style={btnStyle(selectedCard ? UI.danger : "#475569")}>
-                    Confirm Discard
-                </button>
-            )}
+  if (room.status === 'lobby') {
+    return (
+      <div className="container">
+        <h2>Room: {roomId}</h2>
+        <p className="muted">Share this code with others to join. Max 5 players.</p>
+        <div className="panel">
+          {players.map(p => (
+            <div key={p.id} className="row" style={{justifyContent:'space-between'}}>
+              <div>{p.name || p.id.slice(0,6)}</div>
+              <div className={`pill ${p.isReady?'success':''}`}>{p.isReady?'Ready':'Not ready'}</div>
+            </div>
+          ))}
+        </div>
+        <div className="row" style={{marginTop:12}}>
+          <button onClick={toggleReady}>{meState?.isReady ? 'Unready' : 'Ready up'}</button>
+          {iAmOwner && <button onClick={startGame} disabled={!players.every(p => p.isReady)}>Start game</button>}
         </div>
       </div>
+    )
+  }
 
-      <div style={{ flex: 1, position: "relative", background: UI.felt }}>
-        {/* Game Table Content (Seats, Deck, etc.) */}
-        <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)", display: "flex", gap: 25 }}>
-          <div onClick={() => handlePickup('STOCK')} style={{ ...UI.card.base, ...UI.card.md, background: "#1e293b", color: 'white', border: '2px solid rgba(255,255,255,0.1)' }}>DECK</div>
-          <div onClick={() => handlePickup('DISCARD')} style={{ ...UI.card.base, ...UI.card.md }}>
-            <CardFace card={room.deck?.[room.discard?.[room.discard.length - 1]]} />
+  if (room.status === 'scored') {
+    return (
+      <div className="container">
+        <h2>Round summary</h2>
+        <Summary room={room} players={players} />
+        <div className="row" style={{marginTop:16}}>
+          <button onClick={()=>updateDoc(roomRef, { status:'lobby', tiplu:null, tipluPublicAtGrace:false, deck:[], discard:[], turnIndex:0 })}>
+            Back to lobby (same room)
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="container">
+      <Header
+        room={room}
+        players={players}
+        meState={meState}
+        currentTurnPlayerId={room.status==='playing' ? players[(room.turnIndex||0)%players.length]?.id : null}
+        tipluVisibleToAll={tipluVisibleToAll}
+      />
+
+      <AllMeldsBoard players={players} tiplu={room.tiplu} />
+
+      <MyHand
+        meState={meState}
+        tiplu={room.tiplu}
+        showWild={meState?.isRevealed || tipluVisibleToAll}
+        handSel={handSel}
+        addToSel={addToSel}
+        removeFromSel={removeFromSel}
+      />
+
+      <div className="panel" style={{marginTop:12}}>
+        <h3>My melds</h3>
+        <Melds melds={meState?.melds || []} tiplu={room.tiplu} />
+      </div>
+
+      {message && <p className="pill danger">{message}</p>}
+
+      <div className="fixedbar">
+        {room.status==='playing' && (
+          <>
+            <button onClick={()=>drawFrom('stock')} disabled={!isMyTurn}>Draw from deck</button>
+            <button onClick={()=>drawFrom('discard')} disabled={!isMyTurn}>Take top discard</button>
+            <button onClick={()=>layMeld('sequence')}>Lay Sequence</button>
+            <button onClick={()=>layMeld('identical')}>Lay Identical (3)</button>
+            <button onClick={()=>layMeld('rankset')} disabled={!meState?.isRevealed}>Lay Rank Set</button>
+            <button onClick={declareTennala} disabled={meState?.tennalaDeclared}>Declare Tennala</button>
+            <button onClick={()=>discard(handSel[0])} disabled={!isMyTurn || handSel.length!==1}>Discard selected</button>
+            <button onClick={()=>setHandSel([])}>Clear selection</button>
+          </>
+        )}
+        {room.status==='grace' && (
+          <>
+            <span className="pill">Grace phase — Tiplu is public</span>
+            <button onClick={()=>layMeld('sequence')}>Lay Sequence (≥4 if unrevealed)</button>
+            <button onClick={markGraceDone} className="success">Done</button>
+            <button onClick={()=>setHandSel([])}>Clear selection</button>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function Header({ room, players, meState, currentTurnPlayerId, tipluVisibleToAll }) {
+  const tip = room.tiplu
+  const tipluLabel = tip ? `${tip.rank}${suitName(tip.suit)}` : '—'
+  const turnName = players.find(p=>p.id===currentTurnPlayerId)?.name || '—'
+  return (
+    <div className="panel">
+      <div className="row" style={{justifyContent:'space-between', alignItems:'flex-start'}}>
+        <div className="row">
+          <div className="pill">Status: {room.status}</div>
+          {room.status==='playing' && <div className="pill">Turn: {turnName}</div>}
+          <div className="pill">Tiplu: {(meState?.isRevealed || tipluVisibleToAll) ? tipluLabel : 'Hidden'}</div>
+        </div>
+        <div className="row">
+          {players.map(p => (
+            <div key={p.id} className="pill" title={`Chips: ${p.chips||0}`}>
+              {p.name} — {p.isRevealed ? 'Revealed' : 'Blind'} {room.status==='grace' && (p.graceDone ? '✓' : '')}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Everyone can see all laid melds (by player)
+function AllMeldsBoard({ players, tiplu }) {
+  return (
+    <div className="panel">
+      <h3>Table melds</h3>
+      {players.map(pl => (
+        <div key={pl.id} className="panel" style={{marginTop:8}}>
+          <div className="row" style={{justifyContent:'space-between'}}>
+            <strong>{pl.name}</strong>
+            <span className="muted">Melds: {pl.melds?.length || 0}</span>
+          </div>
+          <Melds melds={pl.melds || []} tiplu={tiplu} />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function MyHand({ meState, tiplu, showWild, handSel, addToSel, removeFromSel }) {
+  const hand = meState?.hand || []
+  return (
+    <div className="panel">
+      <h3>My hand ({hand.length})</h3>
+      <div className="row">
+        {hand.map(c => {
+          const isSel = handSel.includes(c.id)
+          const wild = showWild && tiplu && isWildCard(c, tiplu)
+          return (
+            <div key={c.id}
+                 className={`card ${wild?'wild':''}`}
+                 onClick={()=> isSel ? removeFromSel(c.id) : addToSel(c.id)}
+                 style={{ borderColor: isSel ? '#0078D4' : '#bbb' }}>
+              <span style={{ color: suitColour(c.suit), fontWeight: 600 }}>{c.rank}{suitName(c.suit)}</span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function Melds({ melds, tiplu }) {
+  if (!melds.length) return <div className="muted">No melds yet.</div>
+  return (
+    <div className="grid" style={{gridTemplateColumns:'repeat(auto-fit, minmax(260px, 1fr))'}}>
+      {melds.map(m => (
+        <div key={m.id} className="meld">
+          <div className="muted">{m.kind.toUpperCase()} {m.tag ? `(${m.tag})` : ''}</div>
+          <div className="row">
+            {m.cards.map(c => (
+              <div key={c.id} className={`card ${tiplu && isWildCard(c, tiplu)?'wild':''}`}>
+                <span style={{ color: suitColour(c.suit), fontWeight: 600 }}>{c.rank}{suitName(c.suit)}</span>
+              </div>
+            ))}
           </div>
         </div>
-      </div>
-
-      {myP && (
-        <div style={{ background: UI.panel, padding: "20px", borderTop: "4px solid #334155" }}>
-          <Reorder.Group axis="x" values={localHand} onReorder={updateRemoteHand} style={{ display: "flex", gap: 10, listStyle: 'none', padding: "10px 0", overflowX: "auto", minHeight: '120px' }}>
-            {localHand.map(id => (
-              <Reorder.Item key={id} value={id} style={{ flexShrink: 0 }}>
-                <motion.div 
-                  onClick={() => setSelectedCard(selectedCard === id ? null : id)}
-                  animate={{ 
-                    y: selectedCard === id ? -25 : 0,
-                    scale: selectedCard === id ? 1.05 : 1
-                  }}
-                  whileHover={{ scale: 1.05 }}
-                  style={{ 
-                    ...UI.card.base, 
-                    ...UI.card.lg, 
-                    border: selectedCard === id ? `3px solid ${UI.accent}` : "1px solid #ddd",
-                    boxShadow: selectedCard === id ? `0 0 15px ${UI.accent}66` : "0 2px 5px rgba(0,0,0,0.2)"
-                  }}>
-                  <CardFace card={room.deck[id]} />
-                </motion.div>
-              </Reorder.Item>
-            ))}
-          </Reorder.Group>
-        </div>
-      )}
+      ))}
     </div>
-  );
+  )
 }
 
-function CardFace({ card }) {
-  if (!card) return null;
-  const isRed = ["♥", "♦"].includes(card.suit);
+function Summary({ room, players }) {
+  const side = room.lastSummaryAt ? (room.lastSide || []) : []
+  // Net totals per player for display (under the hood we already applied atomic transfers)
+  const nets = {}
+  for (const p of players) nets[p.id] = 0
+  for (const t of side) {
+    nets[t.from] -= t.amount
+    nets[t.to]   += t.amount
+  }
   return (
-    <div style={{ color: isRed ? "#ef4444" : "#0f172a", textAlign: "center", pointerEvents: 'none' }}>
-      <div style={{ fontWeight: "bold", fontSize: 20 }}>{card.rank}</div>
-      <div style={{ fontSize: 26 }}>{card.suit}</div>
-    </div>
-  );
+    <>
+      <h3>Side transfers (netted)</h3>
+      <div className="panel">
+        {players.map(p => (
+          <div key={p.id} className="row" style={{justifyContent:'space-between'}}>
+            <div>{p.name}</div>
+            <div>{nets[p.id]>=0?'+':''}{nets[p.id]} chips</div>
+          </div>
+        ))}
+      </div>
+      <details style={{marginTop:8}}>
+        <summary>Show atomic transfers & reasons</summary>
+        <ul>
+          {side.map((t, i) => (
+            <li key={i}>
+              {players.find(p=>p.id===t.from)?.name} → {players.find(p=>p.id===t.to)?.name}: {t.amount} ({t.reason})
+            </li>
+          ))}
+        </ul>
+      </details>
+      <h3 style={{marginTop:16}}>Balances</h3>
+      <div className="panel">
+        {players.map(p => (
+          <div key={p.id} className="row" style={{justifyContent:'space-between'}}>
+            <div>{p.name}</div>
+            <div>{p.chips || 0} chips</div>
+          </div>
+        ))}
+      </div>
+    </>
+  )
 }
-
-function btnStyle(bg) { return { background: bg, border: "none", color: "white", padding: "10px 18px", borderRadius: 8, cursor: "pointer", fontWeight: "bold", transition: 'all 0.2s' }; }
