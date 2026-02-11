@@ -381,7 +381,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
           players={players}
           meState={meState}
           currentTurnPlayerId={players[(room.turnIndex||0)%players.length]?.id}
-          tipluVisibleToAll={room.status==='grace' && room.tipl uPublicAtGrace}
+          tipluVisibleToAll={room.status==='grace' && room.tipluPublicAtGrace}
           drawFrom={drawFrom}
           layMeld={layMeld}
           declareTennala={declareTennala}
