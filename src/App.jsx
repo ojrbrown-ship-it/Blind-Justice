@@ -1,86 +1,73 @@
+// src/App.jsx
 import React, { useEffect, useState } from 'react'
 import { signInAnonymously, onAuthStateChanged } from 'firebase/auth'
 import { auth, db } from './firebase'
-import { doc, setDoc } from 'firebase/firestore'
+import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore'
 import MarriageRummyOnline from './game/MarriageRummyOnline.jsx'
 import { nanoid } from 'nanoid'
 
+const PERSISTENT_ROOM_ID = 'TABLE-1'   // rename if you want a different fixed ID
+const DEFAULT_STACK = 250              // chips on sit-down
+
 export default function App() {
   const [user, setUser] = useState(null)
-  const [roomId, setRoomId] = useState('')
-  const [nick, setNick] = useState('')
+  const [ready, setReady] = useState(false)
+  const [displayName, setDisplayName] = useState('')
 
+  // Keep a stable display name in localStorage
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => setUser(u))
+    const existing = localStorage.getItem('bj_name')
+    if (existing) setDisplayName(existing)
+    else {
+      const name = `Player-${nanoid(4)}`
+      localStorage.setItem('bj_name', name)
+      setDisplayName(name)
+    }
+  }, [])
+
+  // Auto sign-in and ensure the single room exists
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      if (!u) {
+        await signInAnonymously(auth)
+        return
+      }
+      setUser(u)
+      // Ensure persistent room document exists (create once, keep reusing)
+      const roomRef = doc(db, 'rooms', PERSISTENT_ROOM_ID)
+      const snap = await getDoc(roomRef)
+      if (!snap.exists()) {
+        await setDoc(roomRef, {
+          createdAt: Date.now(),
+          ownerId: u.uid,          // first to arrive becomes owner; not critical
+          status: 'lobby',         // lobby | playing | grace | scored
+          tiplu: null,
+          tipluPublicAtGrace: false,
+          maxPlayers: 5,
+          deckSeed: nanoid(10),
+          deck: [],
+          discard: [],
+          turnIndex: 0
+        })
+      } else {
+        // Optional: if ownerId empty/invalid, adopt current user as owner
+        const data = snap.data()
+        if (!data.ownerId) await updateDoc(roomRef, { ownerId: u.uid })
+      }
+      setReady(true)
+    })
     return () => unsub()
   }, [])
 
-  const ensureAnon = async () => {
-    if (!auth.currentUser) await signInAnonymously(auth)
-  }
-
-  const createRoom = async () => {
-    await ensureAnon()
-    const id = (Math.random().toString(36).slice(2, 6) + Math.random().toString(36).slice(2, 6)).toUpperCase()
-    const displayName = nick || localStorage.getItem('bj_name') || `Player-${nanoid(4)}`
-    localStorage.setItem('bj_name', displayName)
-    const roomRef = doc(db, 'rooms', id)
-    await setDoc(roomRef, {
-      createdAt: Date.now(),
-      ownerId: auth.currentUser.uid,
-      status: 'lobby',        // lobby | playing | grace | scored
-      tiplu: null,
-      tipluPublicAtGrace: false,
-      maxPlayers: 5,
-      deckSeed: nanoid(10)
-    })
-    setRoomId(id)
-  }
-
-  const joinRoom = async () => {
-    if (!roomId) return
-    await ensureAnon()
-    const displayName = nick || localStorage.getItem('bj_name') || `Player-${nanoid(4)}`
-    localStorage.setItem('bj_name', displayName)
-    setRoomId(roomId.toUpperCase())
-  }
-
-  if (!user) {
+  if (!ready || !user || !displayName) {
     return (
       <div className="container">
         <h1>Blind Justice (Online)</h1>
-        <p className="muted">You’ll be signed in anonymously to sync games via Firebase.</p>
-        <button onClick={ensureAnon}>Sign in anonymously</button>
+        <p className="muted">Loading table…</p>
       </div>
     )
   }
 
-  if (roomId) {
-    return <MarriageRummyOnline roomId={roomId} displayName={localStorage.getItem('bj_name') || 'Player'} />
-  }
-
-  return (
-    <div className="container">
-      <h1>Blind Justice (Online)</h1>
-
-      <div className="panel">
-        <h3>Create a room</h3>
-        <div className="row">
-          <input placeholder="Your name (optional)" value={nick} onChange={e=>setNick(e.target.value)} />
-          <button onClick={createRoom}>Create</button>
-        </div>
-      </div>
-
-      <div className="panel" style={{marginTop: 16}}>
-        <h3>Join a room</h3>
-        <div className="row">
-          <input placeholder="ROOM CODE" value={roomId} onChange={e=>setRoomId(e.target.value.toUpperCase())} />
-          <input placeholder="Your name (optional)" value={nick} onChange={e=>setNick(e.target.value)} />
-          <button onClick={joinRoom}>Join</button>
-        </div>
-      </div>
-
-      <p className="muted">Max 5 players. The host can start once everyone is ready.</p>
-    </div>
-  )
+  // Straight to the single table
+  return <MarriageRummyOnline roomId={PERSISTENT_ROOM_ID} displayName={displayName} defaultChips={DEFAULT_STACK} />
 }

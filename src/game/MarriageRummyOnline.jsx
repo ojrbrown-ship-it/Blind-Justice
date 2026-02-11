@@ -1,3 +1,4 @@
+// src/game/MarriageRummyOnline.jsx
 import React, { useEffect, useMemo, useState } from 'react'
 import { db, auth } from '../firebase'
 import {
@@ -11,7 +12,7 @@ import {
 } from './engine'
 import { suitName, suitColour } from './types'
 
-export default function MarriageRummyOnline({ roomId, displayName }) {
+export default function MarriageRummyOnline({ roomId, displayName, defaultChips = 250 }) {
   const roomRef = doc(db, 'rooms', roomId)
   const playersRef = collection(roomRef, 'players')
   const me = auth.currentUser
@@ -33,29 +34,38 @@ export default function MarriageRummyOnline({ roomId, displayName }) {
     return () => { unsubRoom(); unsubPlayers() }
   }, [roomId])
 
-  // Join on mount if not present
+  // Sit down: ensure my player doc exists AND reset chips to the default stack
   useEffect(() => {
     if (!me || !room) return
-    const ensurePlayer = async () => {
+    const sitDown = async () => {
       const myRef = doc(playersRef, me.uid)
       const snap = await getDoc(myRef)
+      const base = {
+        name: displayName,
+        joinedAt: Date.now(),
+        isReady: false,
+        isRevealed: false,
+        hasDrawnThisTurn: false,
+        melds: [],
+        hand: [],
+        tennalaDeclared: false,
+        graceDone: false,
+        chips: defaultChips,       // reset on sit-down
+        seatedAt: Date.now()
+      }
       if (!snap.exists()) {
-        await setDoc(myRef, {
+        await setDoc(myRef, base)
+      } else {
+        // Always reset stack on (re)join so players arrive with 250
+        await updateDoc(myRef, {
           name: displayName,
-          joinedAt: Date.now(),
-          isReady: false,
-          isRevealed: false,
-          hasDrawnThisTurn: false,
-          melds: [],
-          hand: [],
-          tennalaDeclared: false,
-          graceDone: false,
-          chips: 0
+          chips: defaultChips,
+          seatedAt: Date.now()
         })
       }
     }
-    ensurePlayer()
-  }, [me, roomId, room, displayName])
+    sitDown()
+  }, [me, room, displayName, defaultChips])
 
   const iAmOwner = room && me && room.ownerId === me.uid
   const meState = players.find(p => p.id === me?.uid)
@@ -191,7 +201,7 @@ export default function MarriageRummyOnline({ roomId, displayName }) {
       const meld = { id: nanoid(6), kind, cards }
       const newMelds = [...meD.melds, meld]
 
-      // compute reveal credits with R1 Option A (floor(len/3) for sequences; identical=1; rankset=1 only post-reveal)
+      // Reveal credits (R1 Option A)
       let willReveal = meD.isRevealed
       if (!meD.isRevealed) {
         const credits = newMelds.reduce((s, m) => s + revealCreditsForMeld(m, false, tiplu), 0)
@@ -209,7 +219,7 @@ export default function MarriageRummyOnline({ roomId, displayName }) {
 
   const declareTennala = async () => {
     if (!meState || meState.tennalaDeclared) return
-    // Must be before your first pickup in the hand; we assume if you haven't drawn yet this round.
+    // Detect any 3 identical in hand
     const hand = meState.hand
     const byKey = {}
     for (const c of hand) {
@@ -231,7 +241,7 @@ export default function MarriageRummyOnline({ roomId, displayName }) {
         melds: [...meD.melds, meld],
         tennalaDeclared: true
       })
-      // immediate chip side-payments: 10 from each other player to me
+      // Immediate 10-chip per opponent to me
       const others = players.filter(pl => pl.id !== me.uid)
       for (const o of others) {
         const oRef = doc(playersRef, o.id)
@@ -301,14 +311,14 @@ export default function MarriageRummyOnline({ roomId, displayName }) {
 
   // ---------- UI ----------
   if (!room) {
-    return <div className="container"><p>Loading room…</p></div>
+    return <div className="container"><p>Loading table…</p></div>
   }
 
   if (room.status === 'lobby') {
     return (
       <div className="container">
-        <h2>Room: {roomId}</h2>
-        <p className="muted">Share this code with others to join. Max 5 players.</p>
+        <h2>Table: {roomId}</h2>
+        <p className="muted">You’re seated with {players.length} player(s). Everyone starts with {defaultChips} chips on sit‑down.</p>
         <div className="panel">
           {players.map(p => (
             <div key={p.id} className="row" style={{justifyContent:'space-between'}}>
@@ -331,8 +341,9 @@ export default function MarriageRummyOnline({ roomId, displayName }) {
         <h2>Round summary</h2>
         <Summary room={room} players={players} />
         <div className="row" style={{marginTop:16}}>
+          {/* Return to lobby for next hand; chips persist until next sit-down */}
           <button onClick={()=>updateDoc(roomRef, { status:'lobby', tiplu:null, tipluPublicAtGrace:false, deck:[], discard:[], turnIndex:0 })}>
-            Back to lobby (same room)
+            Back to lobby (same table)
           </button>
         </div>
       </div>
