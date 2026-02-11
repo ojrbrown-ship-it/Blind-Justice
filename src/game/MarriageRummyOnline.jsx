@@ -404,10 +404,9 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
             tennalaDeclared: false,
             graceDone: false
           })
-        })
-      }
-    } catch (e) {
-      setMessage('Failed to start a new round: ' + (e?.message || e))
+        }); // Closes the transaction callback
+    } catch (e) { // Closes the try block and starts catch
+      setMessage('Failed to start a new round: ' + (e?.message || e));
     }
   }
 
