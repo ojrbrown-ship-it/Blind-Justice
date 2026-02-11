@@ -1,9 +1,8 @@
 // src/game/MarriageRummyOnline.jsx
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { db } from '../firebase'
-import { enableNetwork } from 'firebase/firestore'
 import {
-  collection, doc, onSnapshot, setDoc, updateDoc, getDoc, runTransaction
+  collection, doc, onSnapshot, setDoc, updateDoc, getDoc, runTransaction, enableNetwork
 } from 'firebase/firestore'
 import { nanoid } from 'nanoid'
 import {
@@ -26,16 +25,12 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
 
   const creatingRoom = useRef(false)
 
-  // Handle browser online/offline and nudge Firestore back online
-useEffect(() => {
-  const onUp = async () => {
-    try {
-      await enableNetwork(db)
-    } catch {}
-  }
-  window.addEventListener('online', onUp)
-  return () => window.removeEventListener('online', onUp)
-}, [])
+  // Ensure Firestore network is enabled if the browser goes offline→online
+  useEffect(() => {
+    const onUp = async () => { try { await enableNetwork(db) } catch {} }
+    window.addEventListener('online', onUp)
+    return () => window.removeEventListener('online', onUp)
+  }, [])
 
   // Subscribe to the room. If it doesn't exist, create it here.
   useEffect(() => {
@@ -52,8 +47,8 @@ useEffect(() => {
             try {
               await setDoc(roomRef, {
                 createdAt: Date.now(),
-                ownerId: playerId,       // first visitor becomes owner
-                status: 'lobby',         // lobby | playing | grace | scored
+                ownerId: playerId,       // first visitor becomes owner (not used now)
+                status: 'idle',          // idle | playing | grace | scored
                 tiplu: null,
                 tipluPublicAtGrace: false,
                 maxPlayers: 5,
@@ -66,8 +61,10 @@ useEffect(() => {
             } catch (e) {
               console.error('[Room create error]', e)
               setBootError(
-                e?.message ||
-                'Failed to create table. Check Firestore rules & project env.'
+                (e?.message || 'Failed to create table.') +
+                (String(e?.message || '').includes('offline')
+                  ? ' (hint: network may block WebSockets; we use HTTP long‑polling and queue writes)'
+                  : '')
               )
             } finally {
               creatingRoom.current = false
@@ -86,7 +83,7 @@ useEffect(() => {
         console.error('[Room snapshot error]', err)
         const msg = err?.message || 'Failed to read table document.'
         const hint = msg.includes('offline')
-          ? ' (hint: your network may block WebSockets; we’ve switched to HTTP long‑polling, try refreshing, or check ad‑block / firewall settings)'
+          ? ' (hint: using HTTP long‑polling; refresh or check firewall/ad‑block if it persists)'
           : ''
         setBootError(msg + hint)
         setRoom(null)
@@ -114,81 +111,124 @@ useEffect(() => {
     return () => unsub()
   }, [roomId])
 
-  // Sit down: write my player doc unconditionally (merge) and reset chips to default.
-// This works even if the SDK thinks it's offline (it will queue and sync later).
-useEffect(() => {
-  if (!playerId || !room) return
-
-  const sitDown = async () => {
-    try {
-      const myRef = doc(playersRef, playerId)
-      const base = {
-        name: displayName,
-        // baseline state for a fresh seat
-        joinedAt: Date.now(),
-        isReady: false,
-        isRevealed: false,
-        hasDrawnThisTurn: false,
-        melds: [],
-        hand: [],
-        tennalaDeclared: false,
-        graceDone: false,
-        chips: defaultChips,     // reset stack on every sit-down (as requested)
-        seatedAt: Date.now()
+  // Sit down: write my player doc unconditionally (merge) and reset chips to default on each visit.
+  useEffect(() => {
+    if (!playerId || !room) return
+    const sitDown = async () => {
+      try {
+        const myRef = doc(playersRef, playerId)
+        const base = {
+          name: displayName,
+          joinedAt: Date.now(),
+          isRevealed: false,
+          hasDrawnThisTurn: false,
+          melds: [],
+          hand: [],
+          tennalaDeclared: false,
+          graceDone: false,
+          chips: defaultChips,
+          seatedAt: Date.now()
+        }
+        await setDoc(myRef, base, { merge: true }) // no pre-read; works even if network is flakey
+      } catch (e) {
+        console.error('[Sit down error]', e)
+        setBootError((e?.message || 'Failed to seat player.') +
+          (String(e?.message || '').includes('offline')
+            ? ' (hint: queued locally; will sync when network is available)'
+            : '')
+        )
       }
-      await setDoc(myRef, base, { merge: true })   // <-- key change: write without reading first
+    }
+    sitDown()
+  }, [playerId, room, displayName, defaultChips])
+
+  // Allow changing your name (updates your player doc + local storage)
+  const [nameDraft, setNameDraft] = useState(displayName)
+  useEffect(() => setNameDraft(displayName), [displayName])
+  const saveName = async () => {
+    try {
+      localStorage.setItem('bj_name', nameDraft)
+      await setDoc(doc(playersRef, playerId), { name: nameDraft }, { merge: true })
     } catch (e) {
-      console.error('[Sit down error]', e)
-      setBootError((e?.message || 'Failed to seat player.') +
-        (String(e?.message || '').includes('offline')
-          ? ' (hint: network may block WebSockets; we fall back to HTTP and queue this write locally)'
-          : '')
-      )
+      setMessage('Failed to save name: ' + (e?.message || e))
     }
   }
-
-  sitDown()
-}, [playerId, room, displayName, defaultChips])
 
   const iAmOwner = room && playerId && room.ownerId === playerId
   const meState = players.find(p => p.id === playerId)
 
-  // ---------- Lobby actions ----------
-  const toggleReady = async () => {
-    try {
-      await updateDoc(doc(playersRef, playerId), { isReady: !meState?.isReady })
-    } catch (e) {
-      setMessage('Failed to toggle ready: ' + (e?.message || e))
-    }
-  }
+  // ---------- Auto‑start: Deal automatically whenever there are ≥ 2 players and not currently playing ----------
+  useEffect(() => {
+    if (!room) return
+    if (players.length < 2) return
+    if (room.status === 'playing') return
 
-  const startGame = async () => {
-    if (!iAmOwner) return
-    const p = players
-    if (p.length < 2 || p.length > 5) { setMessage('Need 2–5 players to start.'); return }
-    const deck = shuffle(buildThreeDecks(), room.deckSeed || nanoid(8))
-    const { deck: remaining, hands, tiplu, discard } = dealInitial(deck, p.length)
-    await runTransaction(db, async (tx) => {
-      tx.update(roomRef, {
-        status: 'playing',
-        tiplu,
-        tipluPublicAtGrace: false,
-        deck: remaining,
-        discard,
-        turnIndex: 0,
-        startedAt: Date.now(),
-      })
-      p.forEach((pl, idx) => {
-        tx.update(doc(playersRef, pl.id), {
-          hand: hands[idx],
-          melds: [],
-          isRevealed: false,
-          hasDrawnThisTurn: false,
-          tennalaDeclared: false,
-          graceDone: false
+    const autoStart = async () => {
+      try {
+        const p = players
+        const deck = shuffle(buildThreeDecks(), room.deckSeed || nanoid(8))
+        const { deck: remaining, hands, tiplu, discard } = dealInitial(deck, p.length)
+        await runTransaction(db, async (tx) => {
+          tx.update(roomRef, {
+            status: 'playing',
+            tiplu,
+            tipluPublicAtGrace: false,
+            deck: remaining,
+            discard,
+            turnIndex: 0,
+            startedAt: Date.now(),
+          })
+          p.forEach((pl, idx) => {
+            tx.update(doc(playersRef, pl.id), {
+              hand: hands[idx],
+              melds: [],
+              isRevealed: false,
+              hasDrawnThisTurn: false,
+              tennalaDeclared: false,
+              graceDone: false
+            })
+          })
+        })
+      } catch (e) {
+        console.error('[Auto-start error]', e)
+        setMessage('Failed to start round: ' + (e?.message || e))
+      }
+    }
+
+    autoStart()
+  }, [room, players])
+
+  // “New round” — redeal from any state (anyone can click)
+  const newRound = async () => {
+    try {
+      const p = players
+      if (p.length < 2) { setMessage('Need at least 2 players to deal.'); return }
+      const deck = shuffle(buildThreeDecks(), nanoid(8))
+      const { deck: remaining, hands, tiplu, discard } = dealInitial(deck, p.length)
+      await runTransaction(db, async (tx) => {
+        tx.update(roomRef, {
+          status: 'playing',
+          tiplu,
+          tipluPublicAtGrace: false,
+          deck: remaining,
+          discard,
+          turnIndex: 0,
+          startedAt: Date.now(),
+        })
+        p.forEach((pl, idx) => {
+          tx.update(doc(playersRef, pl.id), {
+            hand: hands[idx],
+            melds: [],
+            isRevealed: false,
+            hasDrawnThisTurn: false,
+            tennalaDeclared: false,
+            graceDone: false
+          })
         })
       })
-    })
+    } catch (e) {
+      setMessage('Failed to start a new round: ' + (e?.message || e))
+    }
   }
 
   // ---------- Helpers ----------
@@ -333,7 +373,7 @@ useEffect(() => {
   useEffect(() => {
     if (!inGrace) return
     const allDone = players.every(p => p.graceDone || p.hand.length===0)
-    if (allDone && iAmOwner && room.status==='grace') {
+    if (allDone && room.status==='grace') {
       scoreRound()
     }
   }, [inGrace, players, room])
@@ -373,23 +413,35 @@ useEffect(() => {
       {(bootMsg || bootError) && (
         <p className={`pill ${bootError ? 'danger' : 'muted'}`}>
           {bootError ? `Boot error: ${bootError}` : bootMsg}
+          {bootError && (
+            <button
+              style={{ marginLeft: 8 }}
+              onClick={async () => { try { await enableNetwork(db) } catch {} }}
+            >
+              Retry
+            </button>
+          )}
         </p>
       )}
 
+      {/* Name box */}
+      <div className="row" style={{marginBottom: 8}}>
+        <input
+          value={nameDraft}
+          onChange={e=>setNameDraft(e.target.value)}
+          placeholder="Your name"
+          style={{minWidth: 280}}
+        />
+        <button onClick={saveName}>Save name</button>
+        <button onClick={newRound}>New round</button>
+      </div>
+
+      {/* Table */}
       {!room ? (
         <p className="muted">Loading table…</p>
-      ) : room.status === 'lobby' ? (
-        <Lobby
-          roomId={roomId}
-          players={players}
-          meState={meState}
-          defaultChips={defaultChips}
-          iAmOwner={iAmOwner}
-          startGame={startGame}
-          toggleReady={toggleReady}
-        />
-      ) : room.status === 'scored' ? (
-        <Scored room={room} players={players} roomRef={roomRef} />
+      ) : room.status === 'scored' || room.status === 'idle' ? (
+        // If idle or scored, we still show the list + New round; auto-start effect will kick in if ≥ 2 players
+        <Lobby players={players} defaultChips={defaultChips} />
       ) : (
         <Playing
           room={room}
@@ -415,23 +467,22 @@ useEffect(() => {
   )
 }
 
-function Lobby({ roomId, players, meState, defaultChips, iAmOwner, startGame, toggleReady }) {
+function Lobby({ players, defaultChips }) {
   return (
     <>
-      <h2>Table: {roomId}</h2>
+      <h2>Players at the table</h2>
       <p className="muted">You’re seated with {players.length} player(s). Everyone starts with {defaultChips} chips on sit‑down.</p>
       <div className="panel">
         {players.map(p => (
           <div key={p.id} className="row" style={{justifyContent:'space-between'}}>
             <div>{p.name || p.id.slice(0,6)}</div>
-            <div className={`pill ${p.isReady?'success':''}`}>{p.isReady?'Ready':'Not ready'}</div>
+            <div className="pill">Chips: {p.chips ?? 250}</div>
           </div>
         ))}
       </div>
-      <div className="row" style={{marginTop:12}}>
-        <button onClick={toggleReady}>{meState?.isReady ? 'Unready' : 'Ready up'}</button>
-        {iAmOwner && <button onClick={startGame} disabled={!players.every(p => p.isReady)}>Start game</button>}
-      </div>
+      <p className="muted" style={{marginTop:8}}>
+        The round will auto‑deal when at least two players are seated, or press “New round” to deal now.
+      </p>
     </>
   )
 }
@@ -490,20 +541,6 @@ function Playing({
             <button onClick={clearSel}>Clear selection</button>
           </>
         )}
-      </div>
-    </>
-  )
-}
-
-function Scored({ room, players, roomRef }) {
-  return (
-    <>
-      <h2>Round summary</h2>
-      <Summary room={room} players={players} />
-      <div className="row" style={{marginTop:16}}>
-        <button onClick={()=>updateDoc(roomRef, { status:'lobby', tiplu:null, tipluPublicAtGrace:false, deck:[], discard:[], turnIndex:0 })}>
-          Back to lobby (same table)
-        </button>
       </div>
     </>
   )
