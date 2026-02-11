@@ -96,18 +96,33 @@ export function isSequence(cards, playerHasRevealed, tiplu) {
   const ranks = cards.map(c => (playerHasRevealed && isWildCard(c, tiplu)) ? 'W' : c.rank)
   const fits = (handRanks, target) => {
     const nonW = handRanks.filter(r => r !== 'W')
-    if (!nonW.every(r => target.includes(r))) return false
-    const missing = target.filter(r => !nonW.includes(r))
+    // Use multiset comparison: for each non-wild rank, it must appear in target
+    const targetPool = target.slice()
+    for (const r of nonW) {
+      const idx = targetPool.indexOf(r)
+      if (idx === -1) return false
+      targetPool.splice(idx, 1)
+    }
+    // Remaining target slots need to be filled by wilds
     const wilds = handRanks.length - nonW.length
-    return wilds >= missing.length
+    return wilds >= targetPool.length
   }
   for (let start = 0; start <= (RANKS.length - cards.length); start++) {
     const target = RANKS.slice(start, start + cards.length)
     if (fits(ranks, target)) return true
   }
-  if (cards.length === 3) {
-    if (fits(ranks, ['A','2','3'])) return true
+  // Handle Ace-high: Q-K-A for length 3, and longer sequences ending with A
+  if (cards.length >= 3) {
     if (fits(ranks, ['Q','K','A'])) return true
+    // For longer sequences ending with Ace-high
+    if (cards.length > 3) {
+      const endIdx = RANKS.indexOf('Q')
+      const startIdx = endIdx - (cards.length - 3)
+      if (startIdx >= 0) {
+        const target = [...RANKS.slice(startIdx, endIdx), 'Q', 'K', 'A']
+        if (target.length === cards.length && fits(ranks, target)) return true
+      }
+    }
   }
   return false
 }
