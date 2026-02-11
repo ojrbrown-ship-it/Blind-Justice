@@ -2,7 +2,7 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { db } from '../firebase'
 import {
-  collection, doc, onSnapshot, setDoc, updateDoc, getDoc, runTransaction, enableNetwork
+  collection, doc, onSnapshot, setDoc, updateDoc, getDoc, getDocs, deleteDoc, runTransaction, enableNetwork
 } from 'firebase/firestore'
 import { nanoid } from 'nanoid'
 import {
@@ -269,6 +269,35 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
       setMessage('')
     } catch (e) {
       setMessage('Failed to leave: ' + (e?.message || e))
+    }
+  }
+
+  const resetTable = async () => {
+    if (!window.confirm('Reset the entire table? This will clear all games, players, and hands.')) return
+    try {
+      // Delete all player docs
+      const snap = await getDocs(playersRef)
+      const deletes = []
+      snap.forEach(d => deletes.push(deleteDoc(d.ref)))
+      await Promise.all(deletes)
+      // Reset room doc to idle state
+      await setDoc(roomRef, {
+        createdAt: Date.now(),
+        ownerId: playerId,
+        status: 'idle',
+        tiplu: null,
+        tipluPublicAtGrace: false,
+        maxPlayers: 5,
+        deckSeed: nanoid(10),
+        deck: [],
+        discard: [],
+        turnIndex: 0
+      })
+      setHandSel([])
+      setMessage('Table has been reset.')
+      setTimeout(() => setMessage(''), 3000)
+    } catch (e) {
+      setMessage('Reset failed: ' + (e?.message || e))
     }
   }
 
@@ -657,6 +686,9 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
               {meState.chips ?? 250} chips
             </span>
           )}
+          <button onClick={resetTable} className="btn-danger" style={{ padding: '6px 10px' }}>
+            Reset Table
+          </button>
           <button onClick={() => setShowSettings(!showSettings)} style={{ padding: '6px 10px' }}>
             {showSettings ? 'Close' : 'Settings'}
           </button>
