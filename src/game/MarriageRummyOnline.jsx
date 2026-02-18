@@ -806,7 +806,7 @@ wild={tipluVisibleToMe && room?.tiplu && isWildCard(topDiscard, room.tiplu)}
 <span className="discard-label">Discard</span>
 </div>
 </>
-            ))}
+            )}
             )}
 </div>
 </div>
