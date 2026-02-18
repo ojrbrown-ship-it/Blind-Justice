@@ -950,7 +950,7 @@ Undo Melds
 )}
 </div>
 </div>
-<div className="hand-area" style={{ flexWrap: 'wrap', justifyContent: 'center' }}>
+<div className="hand-area">
 {displayHand.map((c, idx) => (
 <PlayingCard
 key={c.id}
