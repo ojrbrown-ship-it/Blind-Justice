@@ -40,7 +40,7 @@ return (rankOrder[a.rank] ?? 0) - (rankOrder[b.rank] ?? 0)
 
 // ===================== CARD COMPONENT =====================
 
-function PlayingCard({ card, selected, wild, onClick, mini, faceDown }) {
+function PlayingCard({ card, selected, wild, onClick, mini, faceDown, draggable, onDragStart, onDragEnd, onDragOver, onDrop, isDragOver }) {
 if (faceDown) {
 return <div className={`playing-card card-back ${mini ? 'mini' : ''}`} />
 }
@@ -49,11 +49,23 @@ const cls = [
 `suit-${card.suit}`,
 selected ? 'selected' : '',
 wild ? 'wild-card' : '',
-mini ? 'mini' : ''
+mini ? 'mini' : '',
+isDragOver ? 'drag-over' : ''
 ].filter(Boolean).join(' ')
 
 return (
-<div className={cls} onClick={onClick} role="button" tabIndex={0} aria-label={`${card.rank} of ${suitName(card.suit)}`}>
+<div
+className={cls}
+onClick={onClick}
+draggable={draggable}
+onDragStart={onDragStart}
+onDragEnd={onDragEnd}
+onDragOver={onDragOver}
+onDrop={onDrop}
+role="button"
+tabIndex={0}
+aria-label={`${card.rank} of ${suitName(card.suit)}`}
+>
 <span className="card-rank">{card.rank}</span>
 <span className="card-suit">{suitName(card.suit)}</span>
 </div>
@@ -158,6 +170,9 @@ const [bootMsg, setBootMsg] = useState('Connecting to table...')
 const [bootError, setBootError] = useState('')
 const [nameDraft, setNameDraft] = useState(displayName)
 const [showSettings, setShowSettings] = useState(false)
+const [draggedCardId, setDraggedCardId] = useState(null)
+const [dragOverIndex, setDragOverIndex] = useState(null)
+const [meldsThisTurn, setMeldsThisTurn] = useState([])
 
 const creatingRoom = useRef(false)
 
@@ -428,6 +443,7 @@ hand: [...meD.hand, card],
 hasDrawnThisTurn: true
 })
 })
+setMeldsThisTurn([])
 } catch (e) {
 setMessage('Draw failed: ' + (e?.message || e))
 }
@@ -445,22 +461,20 @@ const idx = meD.hand.findIndex(c => c.id === cardId)
 if (idx === -1) throw new Error('Card not in hand')
 const newHand = meD.hand.slice()
 const [card] = newHand.splice(idx, 1)
+if (newHand.length === 0) throw new Error('Cannot discard your last card')
 const newDiscard = r.discard.slice()
 newDiscard.push(card)
-const imOut = newHand.length === 0
 tx.update(roomRef, {
 discard: newDiscard,
-...(imOut ? { status: 'grace', tipluPublicAtGrace: true, graceStartedAt: Date.now() } : {
 turnIndex: (r.turnIndex + 1) % seatedPlayers.length
-})
 })
 tx.update(doc(playersRef, playerId), {
 hand: newHand,
-hasDrawnThisTurn: false,
-...(imOut ? { graceDone: true } : {})
+hasDrawnThisTurn: false
 })
 })
 clearSel()
+setMeldsThisTurn([])
 } catch (e) {
 setMessage('Discard failed: ' + (e?.message || e))
 }
@@ -491,6 +505,7 @@ await runTransaction(db, async (tx) => {
 const pRef = doc(playersRef, playerId)
 const meD = (await tx.get(pRef)).data()
 const remaining = meD.hand.filter(c => !cards.some(x => x.id === c.id))
+if (remaining.length === 0) throw new Error('Cannot lay your last cards - must keep at least one card to discard')
 const meld = { id: nanoid(6), kind, cards }
 const newMelds = [...meD.melds, meld]
 let willReveal = meD.isRevealed
@@ -500,6 +515,7 @@ if (credits >= 3) willReveal = true
 }
 tx.update(pRef, { hand: remaining, melds: newMelds, isRevealed: willReveal })
 })
+setMeldsThisTurn(prev => [...prev, { kind, cardIds: cards.map(c => c.id) }])
 clearSel()
 setMessage('')
 } catch (e) {
@@ -511,6 +527,12 @@ const addToMeld = async (meldId) => {
 if (!meState || !selectedCards.length) return
 const cards = selectedCards
 const tiplu = room.tiplu
+const inGrace = room.status === 'grace'
+const canBuildOnOwn = meState.isRevealed || inGrace
+if (!canBuildOnOwn) {
+setMessage('Can only build on own melds when revealed or during grace phase')
+return
+}
 try {
 await runTransaction(db, async (tx) => {
 const pRef = doc(playersRef, playerId)
@@ -528,12 +550,84 @@ if (!ok) throw new Error('Adding these cards creates an invalid meld')
 const newMelds = [...meD.melds]
 newMelds[meldIdx] = { ...meld, cards: newCards }
 const remaining = meD.hand.filter(c => !cards.some(x => x.id === c.id))
+if (remaining.length === 0) throw new Error('Cannot add your last cards - must keep at least one card to discard')
 tx.update(pRef, { hand: remaining, melds: newMelds })
 })
+setMeldsThisTurn(prev => [...prev, { meldId, cardIds: cards.map(c => c.id) }])
 clearSel()
 setMessage('')
 } catch (e) {
 setMessage('Add to meld: ' + (e?.message || e))
+}
+}
+
+const undoMeldsThisTurn = async () => {
+if (!meldsThisTurn.length) return
+try {
+await runTransaction(db, async (tx) => {
+const pRef = doc(playersRef, playerId)
+const meD = (await tx.get(pRef)).data()
+let newMelds = [...meD.melds]
+let cardsToReturn = []
+for (const action of meldsThisTurn) {
+if (action.meldId) {
+const meldIdx = newMelds.findIndex(m => m.id === action.meldId)
+if (meldIdx !== -1) {
+const meld = newMelds[meldIdx]
+const returnCards = meld.cards.filter(c => action.cardIds.includes(c.id))
+cardsToReturn.push(...returnCards)
+newMelds[meldIdx] = {
+...meld,
+cards: meld.cards.filter(c => !action.cardIds.includes(c.id))
+}
+}
+} else {
+const meldToRemove = newMelds.find(m =>
+m.kind === action.kind &&
+action.cardIds.every(id => m.cards.some(c => c.id === id)) &&
+m.cards.every(c => action.cardIds.includes(c.id))
+)
+if (meldToRemove) {
+cardsToReturn.push(...meldToRemove.cards)
+newMelds = newMelds.filter(m => m.id !== meldToRemove.id)
+}
+}
+}
+const newHand = [...meD.hand, ...cardsToReturn]
+let willReveal = meD.isRevealed
+if (!meD.isRevealed) {
+const credits = newMelds.reduce((s, m) => s + revealCreditsForMeld(m, false), 0)
+willReveal = credits >= 3
+}
+tx.update(pRef, { hand: newHand, melds: newMelds, isRevealed: willReveal })
+})
+setMeldsThisTurn([])
+setMessage('Melds undone - cards returned to hand')
+setTimeout(() => setMessage(''), 2000)
+} catch (e) {
+setMessage('Undo failed: ' + (e?.message || e))
+}
+}
+
+const manualSortHand = async () => {
+if (!meState?.hand?.length) return
+try {
+const sorted = sortHand(meState.hand, room?.tiplu, meState.isRevealed)
+await updateDoc(doc(playersRef, playerId), { hand: sorted })
+} catch (e) {
+setMessage('Sort failed: ' + (e?.message || e))
+}
+}
+
+const reorderHand = async (fromIndex, toIndex) => {
+if (!meState?.hand?.length || fromIndex === toIndex) return
+try {
+const newHand = [...meState.hand]
+const [movedCard] = newHand.splice(fromIndex, 1)
+newHand.splice(toIndex, 0, movedCard)
+await updateDoc(doc(playersRef, playerId), { hand: newHand })
+} catch (e) {
+setMessage('Reorder failed: ' + (e?.message || e))
 }
 }
 
@@ -630,10 +724,10 @@ console.error('[Score error]', e)
 }
 
 // ---------- Derived ----------
-const sortedHand = useMemo(() => {
+const displayHand = useMemo(() => {
 if (!meState?.hand) return []
-return sortHand(meState.hand, room?.tiplu, meState.isRevealed)
-}, [meState?.hand, room?.tiplu, meState?.isRevealed])
+return meState.hand
+}, [meState?.hand])
 
 const topDiscard = room?.discard?.length ? room.discard[room.discard.length - 1] : null
 const deckCount = room?.deck?.length || 0
@@ -807,7 +901,6 @@ wild={tipluVisibleToMe && room?.tiplu && isWildCard(topDiscard, room.tiplu)}
 </div>
 </>
             )}
-            )}
 </div>
 </div>
 </div>
@@ -838,29 +931,63 @@ return (
 
 {/* MY HAND */}
 <div className="panel" style={{ marginTop: 8 }}>
-<div className="row" style={{ justifyContent: 'space-between', marginBottom: 4 }}>
-<h3>Your Hand ({sortedHand.length})</h3>
+<div className="row" style={{ justifyContent: 'space-between', marginBottom: 4, flexWrap: 'wrap' }}>
+<h3>Your Hand ({displayHand.length})</h3>
+<div className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
 {handSel.length > 0 && (
-<div className="row" style={{ gap: 4 }}>
+<>
 <span className="pill accent">{handSel.length} selected</span>
 <button onClick={clearSel} style={{ padding: '4px 10px', fontSize: '0.75rem' }}>Clear</button>
-</div>
+</>
+)}
+<button onClick={manualSortHand} style={{ padding: '4px 10px', fontSize: '0.75rem' }} title="Sort hand by suit and rank">
+Sort Hand
+</button>
+{meldsThisTurn.length > 0 && (
+<button onClick={undoMeldsThisTurn} className="btn-danger" style={{ padding: '4px 10px', fontSize: '0.75rem' }}>
+Undo Melds
+</button>
 )}
 </div>
-<div className="hand-area">
-{sortedHand.map(c => (
+</div>
+<div className="hand-area" style={{ flexWrap: 'wrap', justifyContent: 'center' }}>
+{displayHand.map((c, idx) => (
 <PlayingCard
 key={c.id}
 card={c}
 selected={handSel.includes(c.id)}
 wild={tipluVisibleToMe && room?.tiplu && isWildCard(c, room.tiplu)}
 onClick={() => toggleSel(c.id)}
+draggable={true}
+onDragStart={(e) => {
+setDraggedCardId(c.id)
+e.dataTransfer.effectAllowed = 'move'
+}}
+onDragEnd={() => {
+setDraggedCardId(null)
+setDragOverIndex(null)
+}}
+onDragOver={(e) => {
+e.preventDefault()
+e.dataTransfer.dropEffect = 'move'
+setDragOverIndex(idx)
+}}
+onDrop={(e) => {
+e.preventDefault()
+const fromIdx = displayHand.findIndex(card => card.id === draggedCardId)
+if (fromIdx !== -1 && fromIdx !== idx) {
+reorderHand(fromIdx, idx)
+}
+setDraggedCardId(null)
+setDragOverIndex(null)
+}}
+isDragOver={dragOverIndex === idx && draggedCardId !== c.id}
 />
 ))}
-{!sortedHand.length && <span className="muted" style={{ fontSize: '0.85rem' }}>No cards in hand.</span>}
+{!displayHand.length && <span className="muted" style={{ fontSize: '0.85rem' }}>No cards in hand.</span>}
 </div>
 {/* Add to existing meld buttons */}
-{meState?.melds?.length > 0 && handSel.length > 0 && (
+{meState?.melds?.length > 0 && handSel.length > 0 && (meState.isRevealed || room?.status === 'grace') && (
 <div style={{ marginTop: 8 }}>
 <span style={{ fontSize: '0.75rem', color: 'var(--muted)', marginRight: 6 }}>Add to meld:</span>
 {meState.melds.filter(m => m.kind !== 'identical').map(m => (

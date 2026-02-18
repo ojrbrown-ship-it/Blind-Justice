@@ -147,6 +147,10 @@
         box-shadow: 0 0 12px var(--accent-glow), 0 2px 6px rgba(0,0,0,0.3);
         transform: translateY(-8px);
       }
+      .playing-card.drag-over {
+        border-color: var(--ok);
+        box-shadow: 0 0 8px rgba(74,222,128,0.4);
+      }
       .playing-card.wild-card {
         box-shadow: 0 0 10px var(--accent-glow), 0 2px 6px rgba(0,0,0,0.3);
         border-color: var(--wild-glow);
@@ -212,15 +216,6 @@
         letter-spacing: 0.08em; color: rgba(255,255,255,0.5);
         font-weight: 600;
       }
-      .hand-area {
-        height: 120px;
-        flex-shrink: 0;
-        display: flex;
-        gap: 4px;
-        padding: 8px 0;
-        overflow-x: auto;
-        align-items: flex-end;
-
       .seat {
         position: absolute; display: flex; flex-direction: column;
         align-items: center; gap: 4px;
@@ -268,9 +263,8 @@
       /* ===== HAND FAN ===== */
       .hand-area {
         display: flex; gap: 4px; padding: 8px 0;
-        overflow-x: auto; overflow-y: visible;
         min-height: 100px; align-items: flex-end;
-        -webkit-overflow-scrolling: touch;
+        flex-wrap: wrap; justify-content: center;
       }
       .hand-area .playing-card:hover:not(.selected) {
         transform: translateY(-4px);
