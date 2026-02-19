@@ -543,7 +543,21 @@ const meD = (await tx.get(pRef)).data()
 const meldIdx = meD.melds.findIndex(m => m.id === meldId)
 if (meldIdx === -1) throw new Error('Meld not found')
 const meld = meD.melds[meldIdx]
-const newCards = [...meld.cards, ...cards]
+let newCards = [...meld.cards, ...cards]
+// For sequences, sort cards in correct rank order
+if (meld.kind === 'sequence') {
+const rankOrder = RANKS.reduce((acc, r, i) => { acc[r] = i; return acc }, {})
+newCards.sort((a, b) => {
+const aIsWild = meD.isRevealed && isWildCard(a, tiplu)
+const bIsWild = meD.isRevealed && isWildCard(b, tiplu)
+if (aIsWild && !bIsWild) return 1
+if (!aIsWild && bIsWild) return -1
+if (aIsWild && bIsWild) return 0
+const aIdx = rankOrder[a.rank] ?? 0
+const bIdx = rankOrder[b.rank] ?? 0
+return aIdx - bIdx
+})
+}
 // Validate extended meld
 let ok = false
 if (meld.kind === 'sequence') ok = isSequence(newCards, meD.isRevealed, tiplu)
