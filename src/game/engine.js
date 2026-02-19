@@ -76,7 +76,7 @@ export function isRankSet(cards, playerHasRevealed, tiplu) {
   if (!playerHasRevealed) return false
   if (cards.length < 3) return false
   const firstRank = cards[0].rank
-  if (!cards.every(c => c.rank === firstRank || (playerHasRevealed && isWildCard(c, tiplu)))) return false
+  if (!cards.every(c => c.rank === firstRank)) return false
   const suits = []
   for (const c of cards) {
     const suit = c.suit
