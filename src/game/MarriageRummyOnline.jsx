@@ -461,16 +461,19 @@ const idx = meD.hand.findIndex(c => c.id === cardId)
 if (idx === -1) throw new Error('Card not in hand')
 const newHand = meD.hand.slice()
 const [card] = newHand.splice(idx, 1)
-if (newHand.length === 0) throw new Error('Cannot discard your last card')
 const newDiscard = r.discard.slice()
 newDiscard.push(card)
+const imOut = newHand.length === 0
 tx.update(roomRef, {
 discard: newDiscard,
+...(imOut ? { status: 'grace', tipluPublicAtGrace: true, graceStartedAt: Date.now() } : {
 turnIndex: (r.turnIndex + 1) % seatedPlayers.length
+})
 })
 tx.update(doc(playersRef, playerId), {
 hand: newHand,
-hasDrawnThisTurn: false
+hasDrawnThisTurn: false,
+...(imOut ? { graceDone: true } : {})
 })
 })
 clearSel()
