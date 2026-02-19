@@ -264,8 +264,13 @@
       .hand-area {
         display: flex; gap: 4px; padding: 8px;
         min-height: 100px; align-items: center;
-        overflow-x: auto; overflow-y: hidden;
-        -webkit-overflow-scrolling: touch;
+        flex-wrap: wrap; justify-content: center;
+        width: 100%;
+      }
+      .hand-area .playing-card {
+        flex: 1 1 auto;
+        min-width: 60px;
+        max-width: 90px;
       }
       .hand-area .playing-card:hover:not(.selected) {
         transform: translateY(-4px);
