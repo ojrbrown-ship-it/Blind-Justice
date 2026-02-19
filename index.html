@@ -262,9 +262,10 @@
 
       /* ===== HAND FAN ===== */
       .hand-area {
-        display: flex; gap: 4px; padding: 8px 0;
-        min-height: 100px; align-items: flex-end;
-        flex-wrap: wrap; justify-content: center;
+        display: flex; gap: 4px; padding: 8px;
+        min-height: 100px; align-items: center;
+        overflow-x: auto; overflow-y: hidden;
+        -webkit-overflow-scrolling: touch;
       }
       .hand-area .playing-card:hover:not(.selected) {
         transform: translateY(-4px);
