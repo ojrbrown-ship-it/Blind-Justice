@@ -56,7 +56,8 @@
         max-width: 1200px;
         margin: 0 auto;
         padding: 8px 16px;
-        overflow: hidden; }
+        overflow: hidden;
+        gap: 8px; }
 
       .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
@@ -266,6 +267,7 @@
         min-height: 100px; align-items: center;
         flex-wrap: wrap; justify-content: center;
         width: 100%;
+        position: relative; z-index: 5;
       }
       .hand-area .playing-card {
         flex: 1 1 auto;
@@ -315,6 +317,7 @@
         gap: 12px; padding: 8px 0; flex-wrap: wrap;
         border-bottom: 1px solid var(--border);
         margin-bottom: 8px;
+        position: relative; z-index: 20; flex-shrink: 0;
       }
       .top-bar-left { display: flex; align-items: center; gap: 10px; }
       .top-bar-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

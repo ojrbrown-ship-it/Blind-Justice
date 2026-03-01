@@ -76,7 +76,7 @@ export function isRankSet(cards, playerHasRevealed, tiplu) {
   if (!playerHasRevealed) return false
   if (cards.length < 3) return false
   const firstRank = cards[0].rank
-  if (!cards.every(c => c.rank === firstRank)) return false
+  if (!cards.every(c => c.rank === firstRank || (playerHasRevealed && isWildCard(c, tiplu)))) return false
   const suits = []
   for (const c of cards) {
     const suit = c.suit
@@ -148,6 +148,35 @@ export function chipsFromDeadwood(points) {
   if (points >= 100) return 25 // full hand cap/penalty
   const rounded = swedishRound10(points)
   return (rounded / 10) * 2
+}
+
+export function wildcardChipsForPlayer(hand, tiplu) {
+  if (!tiplu) return 0
+  const w = tipluWilds(tiplu)
+  let chips = 0
+  for (const card of hand) {
+    let matched = false
+    if (isSameCard(card, w.primary.tiplu)) {
+      chips += 2
+      matched = true
+    }
+    if (!matched && isSameCard(card, w.primary.high)) {
+      chips += 2
+      matched = true
+    }
+    if (!matched && isSameCard(card, w.primary.low)) {
+      chips += 2
+      matched = true
+    }
+    if (!matched && isSameCard(card, w.secondaryAce) && card.suit === tiplu.suit) {
+      chips += 4
+      matched = true
+    }
+    if (!matched && w.onRank.some(x => isSameCard(card, x))) {
+      chips += 2
+    }
+  }
+  return chips
 }
 
 // ----- Side payments -----

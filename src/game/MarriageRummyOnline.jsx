@@ -8,7 +8,7 @@ import { nanoid } from 'nanoid'
 import {
 buildThreeDecks, shuffle, dealInitial, isIdenticalSet, isRankSet, isSequence,
 isWildCard, revealCreditsForMeld, deadwoodPointsForPlayer, chipsFromDeadwood,
-sidePayments, flattenHoldings, tipluWilds
+sidePayments, flattenHoldings, tipluWilds, wildcardChipsForPlayer
 } from './engine'
 import { suitName, suitColour, RANKS } from './types'
 
@@ -102,7 +102,7 @@ mini
 
 // ===================== PLAYER SEAT =====================
 
-function PlayerSeat({ player, isMe, isCurrentTurn, position }) {
+function PlayerSeat({ player, isMe, isCurrentTurn, isDealer, position }) {
 const credits = meldCreditsTotal(player.melds)
 const revealLabel = player.isRevealed ? 'Revealed' : `${credits}/3`
 return (
@@ -110,8 +110,9 @@ return (
 className={`seat ${isMe ? 'me' : ''} ${isCurrentTurn ? 'active-turn' : ''}`}
 style={{ left: position.left, top: position.top }}
 >
-<div className="avatar">
+<div className="avatar" style={{ position: 'relative' }}>
 {(player.name || '?').slice(0, 2).toUpperCase()}
+{isDealer && <div style={{ position: 'absolute', bottom: -6, right: -6, width: 14, height: 14, background: 'var(--accent)', borderRadius: '50%', fontSize: '8px', fontWeight: '700', display: 'grid', placeItems: 'center', color: 'var(--bg)' }}>D</div>}
 </div>
 <div className="seat-info">
 <div className="seat-name">{player.name || player.id.slice(0, 6)}</div>
@@ -360,6 +361,7 @@ if (seated.length < 1) { setMessage('Need at least 1 player to deal.'); return }
 const deck = shuffle(buildThreeDecks(), nanoid(8))
 const { deck: remaining, hands, tiplu, discard } = dealInitial(deck, seated.length)
 await runTransaction(db, async (tx) => {
+const nextDealer = (room?.dealerIndex ?? -1) + 1
 tx.update(roomRef, {
 status: 'playing',
 tiplu,
@@ -367,6 +369,7 @@ tipluPublicAtGrace: false,
 deck: remaining,
 discard,
 turnIndex: 0,
+dealerIndex: nextDealer % seated.length,
 startedAt: Date.now(),
 deckSeed: nanoid(10),
 })
@@ -412,7 +415,7 @@ setHandSel(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id
 }, [])
 const clearSel = useCallback(() => setHandSel([]), [])
 
-const drawFrom = async (source) => {
+const drawFrom = useCallback(async (source) => {
 if (!isMyTurn) return
 try {
 await runTransaction(db, async (tx) => {
@@ -447,9 +450,9 @@ setMeldsThisTurn([])
 } catch (e) {
 setMessage('Draw failed: ' + (e?.message || e))
 }
-}
+}, [isMyTurn, playerId, roomRef, playersRef, db])
 
-const discardCard = async (cardId) => {
+const discardCard = useCallback(async (cardId) => {
 if (!isMyTurn && room?.status !== 'grace') return
 try {
 await runTransaction(db, async (tx) => {
@@ -481,9 +484,9 @@ setMeldsThisTurn([])
 } catch (e) {
 setMessage('Discard failed: ' + (e?.message || e))
 }
-}
+}, [isMyTurn, room?.status, playerId, roomRef, playersRef, db])
 
-const layMeld = async (kind) => {
+const layMeld = useCallback(async (kind) => {
 if (!meState || !selectedCards.length) return
 const cards = selectedCards
 const revealed = meState.isRevealed
@@ -524,9 +527,9 @@ setMessage('')
 } catch (e) {
 setMessage('Lay meld failed: ' + (e?.message || e))
 }
-}
+}, [meState, selectedCards, room.tiplu, room.status, playerId, roomRef, playersRef, db, clearSel])
 
-const addToMeld = async (meldId) => {
+const addToMeld = useCallback(async (meldId) => {
 if (!meState || !selectedCards.length) return
 const cards = selectedCards
 const tiplu = room.tiplu
@@ -576,9 +579,9 @@ setMessage('')
 } catch (e) {
 setMessage('Add to meld: ' + (e?.message || e))
 }
-}
+}, [meState, selectedCards, room.tiplu, room.status, playerId, roomRef, playersRef, db, clearSel])
 
-const undoMeldsThisTurn = async () => {
+const undoMeldsThisTurn = useCallback(async () => {
 if (!meldsThisTurn.length) return
 try {
 await runTransaction(db, async (tx) => {
@@ -624,9 +627,9 @@ setTimeout(() => setMessage(''), 2000)
 } catch (e) {
 setMessage('Undo failed: ' + (e?.message || e))
 }
-}
+}, [meldsThisTurn, playerId, roomRef, playersRef, db])
 
-const manualSortHand = async () => {
+const manualSortHand = useCallback(async () => {
 if (!meState?.hand?.length) return
 try {
 const sorted = sortHand(meState.hand, room?.tiplu, meState.isRevealed)
@@ -634,9 +637,9 @@ await updateDoc(doc(playersRef, playerId), { hand: sorted })
 } catch (e) {
 setMessage('Sort failed: ' + (e?.message || e))
 }
-}
+}, [meState, room?.tiplu, playerId, playersRef])
 
-const reorderHand = async (fromIndex, toIndex) => {
+const reorderHand = useCallback(async (fromIndex, toIndex) => {
 if (!meState?.hand?.length || fromIndex === toIndex) return
 try {
 const newHand = [...meState.hand]
@@ -646,9 +649,9 @@ await updateDoc(doc(playersRef, playerId), { hand: newHand })
 } catch (e) {
 setMessage('Reorder failed: ' + (e?.message || e))
 }
-}
+}, [meState, playerId, playersRef])
 
-const declareTennala = async () => {
+const declareTennala = useCallback(async () => {
 if (!meState || meState.tennalaDeclared) return
 if (meState.hasDrawnThisTurn) { setMessage('Tennala must be declared before your first pickup.'); return }
 const hand = meState.hand
@@ -666,6 +669,8 @@ await runTransaction(db, async (tx) => {
 const pRef = doc(playersRef, playerId)
 const meD = (await tx.get(pRef)).data()
 if (meD.tennalaDeclared) return
+const others = players.filter(pl => pl.id !== playerId && pl.seatedAt > 0)
+const otherDocs = await Promise.all(others.map(o => tx.get(doc(playersRef, o.id))))
 const remaining = meD.hand.filter(c => !three.some(x => x.id === c.id))
 const meld = { id: nanoid(6), kind: 'identical', cards: three, tag: 'TENNALA' }
 const newMelds = [...meD.melds, meld]
@@ -674,22 +679,19 @@ if (!meD.isRevealed) {
 const credits = newMelds.reduce((s, m) => s + revealCreditsForMeld(m, false), 0)
 if (credits >= 3) willReveal = true
 }
-tx.update(pRef, { hand: remaining, melds: newMelds, tennalaDeclared: true, isRevealed: willReveal })
-const others = players.filter(pl => pl.id !== playerId && pl.seatedAt > 0)
-for (const o of others) {
-const oRef = doc(playersRef, o.id)
-const oD = (await tx.get(oRef)).data()
+tx.update(pRef, { hand: remaining, melds: newMelds, tennalaDeclared: true, isRevealed: willReveal, chips: (meD.chips || 0) + (others.length * 10) })
+for (let i = 0; i < others.length; i++) {
+const oRef = doc(playersRef, others[i].id)
+const oD = otherDocs[i].data()
 tx.update(oRef, { chips: (oD.chips || 0) - 10 })
 }
-const meNow = (await tx.get(pRef)).data()
-tx.update(pRef, { chips: (meNow.chips || 0) + (others.length * 10) })
 })
 setMessage('Tennala declared! Each opponent pays 10 chips.')
 setTimeout(() => setMessage(''), 3000)
 } catch (e) {
 setMessage('Tennala failed: ' + (e?.message || e))
 }
-}
+}, [meState, players, playerId, playersRef, roomRef, db])
 
 // Grace
 const inGrace = room?.status === 'grace'
@@ -722,9 +724,10 @@ for (const p of pStates) {
 if (p.id === winner.id) continue
 const points = deadwoodPointsForPlayer(p.hand || [], r.tiplu)
 const chips = chipsFromDeadwood(points)
+const wildcardChips = wildcardChipsForPlayer(p.hand || [], r.tiplu)
 balances[p.id] -= chips
 balances[winner.id] += chips
-deadwoodInfo.push({ id: p.id, name: p.name, points, chips })
+deadwoodInfo.push({ id: p.id, name: p.name, points, chips, wildcardChips })
 }
 pStates.forEach(p => tx.update(doc(playersRef, p.id), { chips: balances[p.id] }))
 tx.update(roomRef, {
@@ -865,6 +868,7 @@ key={occupant.id}
 player={occupant}
 isMe={occupant.id === playerId}
 isCurrentTurn={room?.status === 'playing' && currentTurnPlayerId === occupant.id}
+isDealer={idx === room?.dealerIndex}
 position={pos}
 />
 )
@@ -916,14 +920,29 @@ wild={tipluVisibleToMe && room?.tiplu && isWildCard(topDiscard, room.tiplu)}
 )}
 <span className="discard-label">Discard</span>
 </div>
+<div className="deck-area">
+{tipluVisibleToMe && room?.tiplu ? (
+<PlayingCard
+card={room.tiplu}
+mini
+/>
+) : (
+<div className="playing-card card-back mini" />
+)}
+<span className="deck-label">Joker</span>
+</div>
 </>
             )}
 </div>
 </div>
 </div>
 
+{/* SCROLLABLE CONTENT SECTION */}
+<div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative', zIndex: 5 }}>
+<div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+
 {/* ALL PLAYERS' MELDS */}
-<div className="panel" style={{ marginTop: 8 }}>
+<div className="panel">
 <h3>Table Melds</h3>
 <div className="melds-section">
 {seatedPlayers.map(pl => {
@@ -947,7 +966,7 @@ return (
 </div>
 
 {/* MY HAND */}
-<div className="panel" style={{ marginTop: 8 }}>
+<div className="panel">
 <div className="row" style={{ justifyContent: 'space-between', marginBottom: 4, flexWrap: 'wrap' }}>
 <h3>Your Hand ({displayHand.length})</h3>
 <div className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
@@ -1036,6 +1055,7 @@ isDragOver={dragOverIndex === idx && draggedCardId !== c.id}
 <th>Player</th>
 <th>Deadwood Pts</th>
 <th>Penalty Chips</th>
+<th>Wildcard Chips</th>
 <th>Total Chips</th>
 </tr>
 </thead>
@@ -1048,6 +1068,7 @@ return (
 <td>{p.name || p.id.slice(0, 6)} {isWinner ? '(Winner)' : ''}</td>
 <td>{isWinner ? '-' : (dw?.points ?? '?')}</td>
 <td>{isWinner ? '-' : (dw?.chips ?? '?')}</td>
+<td>{isWinner ? '-' : (dw?.wildcardChips ?? 0)}</td>
 <td style={{ fontFamily: 'var(--font-mono)' }}>{p.chips ?? '?'}</td>
 </tr>
 )
@@ -1072,6 +1093,9 @@ return (
 )}
 </div>
 )}
+
+</div>
+</div>
 
 {/* ACTION BAR */}
 <div className="action-bar">
