@@ -937,10 +937,6 @@ mini
 </div>
 </div>
 
-{/* SCROLLABLE CONTENT SECTION */}
-<div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative', zIndex: 5 }}>
-<div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
-
 {/* ALL PLAYERS' MELDS */}
 <div className="panel">
 <h3>Table Melds</h3>
@@ -1093,9 +1089,6 @@ return (
 )}
 </div>
 )}
-
-</div>
-</div>
 
 {/* ACTION BAR */}
 <div className="action-bar">
