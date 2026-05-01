@@ -8,9 +8,9 @@ import { nanoid } from 'nanoid'
 import {
   buildThreeDecks, shuffle, dealInitial, isIdenticalSet, isRankSet, isSequence,
   isWildCard, revealCreditsForMeld, deadwoodPointsForPlayer, chipsFromDeadwood,
-  sidePayments, flattenHoldings, tipluWilds
+  sidePayments, flattenHoldings
 } from './engine'
-import { suitName, suitColour, RANKS } from './types'
+import { suitName, RANKS } from './types'
 import { Reorder } from 'framer-motion'
 
 // ===================== HELPERS =====================
@@ -39,37 +39,9 @@ function sortHand(hand, tiplu, isRevealed) {
   })
 }
 
-const remainingInHand = meState.hand.length - handSel.length;
-if (remainingInHand < 1) {
-  setMessage("Failsafe: You must keep at least one card to discard.");
-  return;
-}
-
-const targetPlayer = players.find(p => p.id === targetPlayerId);
-const targetMeld = targetPlayer?.melds?.find(m => m.id === meldId);
-if (!targetMeld) return;
-
-const combinedCards = [...targetMeld.cards, ...handSel];
-  const tiplu = room.tiplu;
-  const revealed = targetPlayer.isRevealed; 
-  
-  let isValid = false;
-  if (targetMeld.kind === 'sequence') {
-    isValid = isSequence(combinedCards, revealed, tiplu);
-  } else if (targetMeld.kind === 'rankset') {
-    isValid = isRankSet(combinedCards, revealed, tiplu);
-  } else if (targetMeld.kind === 'identical') {
-    isValid = isIdenticalSet(combinedCards);
-  }
-
-  if (!isValid) {
-    setMessage(`Invalid: These cards do not fit the ${targetMeld.kind}.`);
-    return;
-  }
-
 // ===================== CARD COMPONENT =====================
 
-function PlayingCard({ card, selected, wild, onClick, mini, faceDown }) {
+function PlayingCard({ card, selected, wild, onClick, mini, faceDown, dragHandle }) {
   if (faceDown) {
     return <div className={`playing-card card-back ${mini ? 'mini' : ''}`} />
   }
@@ -82,7 +54,14 @@ function PlayingCard({ card, selected, wild, onClick, mini, faceDown }) {
   ].filter(Boolean).join(' ')
 
   return (
-    <div className={cls} onClick={onClick} role="button" tabIndex={0} aria-label={`${card.rank} of ${suitName(card.suit)}`}>
+    <div 
+      className={cls} 
+      onClick={onClick} 
+      role="button" 
+      tabIndex={0} 
+      aria-label={`${card.rank} of ${suitName(card.suit)}`}
+      style={dragHandle ? { cursor: 'grab' } : {}}
+    >
       <span className="card-rank">{card.rank}</span>
       <span className="card-suit">{suitName(card.suit)}</span>
     </div>
@@ -91,23 +70,26 @@ function PlayingCard({ card, selected, wild, onClick, mini, faceDown }) {
 
 // ===================== MELDS DISPLAY =====================
 
-function MeldsDisplay({ melds, tiplu, onMeldClick }) {
+function MeldsDisplay({ melds, tiplu, onMeldClick, showWild }) {
+  if (!melds || !melds.length) return null
   return (
-    <div className="row">
+    <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
       {melds.map((m) => (
         <div 
           key={m.id} 
           className="meld-group" 
           onClick={() => onMeldClick?.(m.id)}
           style={{ cursor: onMeldClick ? 'pointer' : 'default' }}
+          title={onMeldClick ? 'Click to add selected cards' : ''}
         >
+          {m.tag === 'TENNALA' && <span className="tennala-badge">TENNALA</span>}
           {m.cards.map((c) => (
-            <PlayingCard key={c.id} card={c} mini wild={isWildCard(c, tiplu)} />
+            <PlayingCard key={c.id} card={c} mini wild={showWild && isWildCard(c, tiplu)} />
           ))}
         </div>
       ))}
     </div>
-  );
+  )
 }
 
 // ===================== PLAYER SEAT =====================
@@ -172,14 +154,14 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
   const roomRef = doc(db, 'rooms', roomId)
   const playersRef = collection(roomRef, 'players')
 
-  const [room, setRoom] = useState(null);
+  const [room, setRoom] = useState(null)
   const [players, setPlayers] = useState([])
-  const [handSel, setHandSel] = useState([])
+  const [handSel, setHandSel] = useState([]) // Array of card IDs
   const [message, setMessage] = useState('')
   const [bootMsg, setBootMsg] = useState('Connecting to table...')
   const [bootError, setBootError] = useState('')
   const [nameDraft, setNameDraft] = useState(displayName)
-  const [showSettings, setShowSettings] = useState(false)
+  const [meldsLaidThisTurn, setMeldsLaidThisTurn] = useState([]) // Track melds laid this turn for undo
 
   const creatingRoom = useRef(false)
 
@@ -261,10 +243,16 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
     return () => unsub()
   }, [roomId])
 
+  // Clear melds laid this turn when turn changes
+  useEffect(() => {
+    setMeldsLaidThisTurn([])
+  }, [room?.turnIndex])
+
   // No auto-sit — player must enter name and click a seat
   const MAX_SEATS = room?.maxPlayers || 5
   const [hasEnteredName, setHasEnteredName] = useState(false)
 
+  const meState = players.find(p => p.id === playerId)
   const isSeated = meState && meState.seatedAt > 0
 
   // If reconnecting and already seated, skip the name entry screen
@@ -284,7 +272,6 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
 
   const sitAtSeat = async (seatIndex) => {
     if (!hasEnteredName || !nameDraft.trim()) return
-    // Check if seat is already taken
     const occupant = players.find(p => p.seatIndex === seatIndex && p.seatedAt > 0)
     if (occupant) { setMessage('That seat is taken.'); return }
     try {
@@ -331,12 +318,10 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
   const resetTable = async () => {
     if (!window.confirm('Reset the entire table? This will clear all games, players, and hands.')) return
     try {
-      // Delete all player docs
       const snap = await getDocs(playersRef)
       const deletes = []
       snap.forEach(d => deletes.push(deleteDoc(d.ref)))
       await Promise.all(deletes)
-      // Reset room doc to idle state
       await setDoc(roomRef, {
         createdAt: Date.now(),
         ownerId: playerId,
@@ -351,6 +336,7 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
       })
       setHandSel([])
       setHasEnteredName(false)
+      setMeldsLaidThisTurn([])
       setMessage('Table has been reset.')
       setTimeout(() => setMessage(''), 3000)
     } catch (e) {
@@ -359,46 +345,15 @@ export default function MarriageRummyOnline({ roomId, displayName, defaultChips 
   }
 
   // ---------- MANUAL DEAL ----------
-const newRound = async () => {
-  try {
-    const seated = players.filter(p => p.seatedAt > 0);
-    if (seated.length < 1) { setMessage('Need at least 1 player to deal.'); return; }
+  const newRound = async () => {
+    try {
+      const seated = players.filter(p => p.seatedAt > 0)
+      if (seated.length < 1) { setMessage('Need at least 1 player to deal.'); return }
 
-    const deck = shuffle(buildThreeDecks(), nanoid(8));
-    const { deck: remaining, hands, tiplu, discard } = dealInitial(deck, seated.length);
+      const deck = shuffle(buildThreeDecks(), nanoid(8))
+      const { deck: remaining, hands, tiplu, discard } = dealInitial(deck, seated.length)
 
-    await runTransaction(db, async (tx) => {
-      // Update room
-      tx.update(roomRef, {
-        status: 'playing',
-        tiplu,
-        tipluPublicAtGrace: false,
-        deck: remaining,
-        discard,
-        turnIndex: 0,
-        startedAt: Date.now(),
-        deckSeed: nanoid(10),
-      });
-
-      // Deal hands to each seated player
-      seated.forEach((pl, idx) => {
-        tx.update(doc(playersRef, pl.id), {
-          hand: hands[idx],
-          melds: [],
-          isRevealed: false,
-          hasDrawnThisTurn: false,
-          tennalaDeclared: false,
-          graceDone: false,
-        });
-      });
-    });
-
-    setHandSel([]);
-    setMessage('');
-  } catch (e) {
-    setMessage('Failed to start a new round: ' + (e?.message ?? e));
-  }
-};
+      await runTransaction(db, async (tx) => {
         tx.update(roomRef, {
           status: 'playing',
           tiplu,
@@ -418,9 +373,14 @@ const newRound = async () => {
             tennalaDeclared: false,
             graceDone: false
           })
-        }); // Closes the transaction callback
-    } catch (e) { // Closes the try block and starts catch
-      setMessage('Failed to start a new round: ' + (e?.message || e));
+        })
+      })
+
+      setHandSel([])
+      setMeldsLaidThisTurn([])
+      setMessage('')
+    } catch (e) {
+      setMessage('Failed to start a new round: ' + (e?.message ?? e))
     }
   }
 
@@ -439,13 +399,17 @@ const newRound = async () => {
   const isMyTurn = room?.status === 'playing' && currentTurnPlayerId === playerId
   const tipluVisibleToMe = meState?.isRevealed || (room?.status === 'grace' && room?.tipluPublicAtGrace)
 
-  const selectedCards = handSel;
+  const selectedCards = useMemo(() => {
+    if (!meState?.hand) return []
+    return meState.hand.filter(c => handSel.includes(c.id))
+  }, [meState?.hand, handSel])
 
-  const toggleSel = useCallback((id) => {
-    setHandSel(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
+  const toggleSel = useCallback((cardId) => {
+    setHandSel(prev => prev.includes(cardId) ? prev.filter(x => x !== cardId) : [...prev, cardId])
   }, [])
   const clearSel = useCallback(() => setHandSel([]), [])
 
+  // ---------- DRAW ----------
   const drawFrom = async (source) => {
     if (!isMyTurn) return
     try {
@@ -457,7 +421,6 @@ const newRound = async () => {
         if (source === 'stock') {
           let deck = r.deck.slice()
           if (!deck.length) {
-            // Reshuffle discard pile (keep top card)
             const disc = r.discard.slice()
             if (disc.length <= 1) throw new Error('No cards left to draw')
             const topDiscard = disc.pop()
@@ -472,30 +435,46 @@ const newRound = async () => {
           card = discard.pop()
           tx.update(roomRef, { discard })
         }
+        // Add new card to END of hand (not sorted)
         tx.update(doc(playersRef, playerId), {
           hand: [...meD.hand, card],
           hasDrawnThisTurn: true
         })
       })
+      setMeldsLaidThisTurn([]) // Clear undo state when drawing
     } catch (e) {
       setMessage('Draw failed: ' + (e?.message || e))
     }
   }
 
+  // ---------- DISCARD ----------
   const discardCard = async (cardId) => {
     if (!isMyTurn && room?.status !== 'grace') return
+    
+    // FAILSAFE: Prevent discarding last card
+    if (meState.hand.length <= 1) {
+      setMessage('Failsafe: You must keep at least one card. You cannot discard your last card.')
+      return
+    }
+    
     try {
       await runTransaction(db, async (tx) => {
         const r = (await tx.get(roomRef)).data()
         const meSnap = await tx.get(doc(playersRef, playerId))
         const meD = meSnap.data()
         if (r.status === 'playing' && !meD.hasDrawnThisTurn) throw new Error('Must draw before discarding')
+        
+        // Double-check failsafe in transaction
+        if (meD.hand.length <= 1) throw new Error('Cannot discard your last card')
+        
         const idx = meD.hand.findIndex(c => c.id === cardId)
         if (idx === -1) throw new Error('Card not in hand')
         const newHand = meD.hand.slice()
         const [card] = newHand.splice(idx, 1)
         const newDiscard = r.discard.slice()
         newDiscard.push(card)
+        
+        // Check if player is out (0 cards after discard)
         const imOut = newHand.length === 0
         tx.update(roomRef, {
           discard: newDiscard,
@@ -510,14 +489,23 @@ const newRound = async () => {
         })
       })
       clearSel()
+      setMeldsLaidThisTurn([])
     } catch (e) {
       setMessage('Discard failed: ' + (e?.message || e))
     }
   }
 
+  // ---------- LAY MELD ----------
   const layMeld = async (kind) => {
     if (!meState || !selectedCards.length) return
-    if (!meState || !handSel.length) return;
+    
+    // FAILSAFE: Check if laying would leave player with 0 cards
+    const remainingAfterLay = meState.hand.length - selectedCards.length
+    if (remainingAfterLay < 1) {
+      setMessage('Failsafe: You must keep at least one card to discard.')
+      return
+    }
+
     const cards = selectedCards
     const revealed = meState.isRevealed
     const tiplu = room.tiplu
@@ -528,49 +516,7 @@ const newRound = async () => {
     if (kind === 'identical') ok = isIdenticalSet(cards)
     if (kind === 'rankset') ok = isRankSet(cards, revealed, tiplu)
     if (kind === 'sequence') ok = isSequence(cards, revealed, tiplu)
-    if (!ok) { setMessage('Invalid meld for the current phase.'); return
-    if (meState.hand.length - handSel.length === 0) {
-      setMessage("Failsafe: You must keep one card to discard.");
-      return;
-    }
-
-    const cards = [...handSel];
-  const revealed = meState.isRevealed;
-  const tiplu = room.tiplu;
-
-  let ok = false;
-  if (kind === 'identical') ok = isIdenticalSet(cards);
-  if (kind === 'rankset') ok = isRankSet(cards, revealed, tiplu);
-  if (kind === 'sequence') ok = isSequence(cards, revealed, tiplu);
-
-  if (!ok) {
-    setMessage("Invalid " + kind);
-    return;
-  }
-
-  try {
-    await runTransaction(db, async (tx) => {
-      const pRef = doc(playersRef, playerId);
-      const meD = (await tx.get(pRef)).data();
-      const remaining = meD.hand.filter(c => !cards.some(x => x.id === c.id));
-      const meld = { id: nanoid(6), kind, cards };
-      const newMelds = [...meD.melds, meld];
-      
-      let willReveal = meD.isRevealed;
-      if (!meD.isRevealed) {
-        const credits = newMelds.reduce((s, m) => s + revealCreditsForMeld(m, false), 0);
-        if (credits >= 3) willReveal = true;
-      }
-      
-      tx.update(pRef, { hand: remaining, melds: newMelds, isRevealed: willReveal });
-    });
-    setHandSel([]);
-    setMessage("");
-  } catch (e) {
-    setMessage("Lay meld failed.");
-  }
-};
-     }
+    if (!ok) { setMessage('Invalid meld for the current phase.'); return }
 
     // Grace constraints for unrevealed players
     if (inGrace && !revealed) {
@@ -579,11 +525,12 @@ const newRound = async () => {
     }
 
     try {
+      const meldId = nanoid(6)
       await runTransaction(db, async (tx) => {
         const pRef = doc(playersRef, playerId)
         const meD = (await tx.get(pRef)).data()
         const remaining = meD.hand.filter(c => !cards.some(x => x.id === c.id))
-        const meld = { id: nanoid(6), kind, cards }
+        const meld = { id: meldId, kind, cards }
         const newMelds = [...meD.melds, meld]
         let willReveal = meD.isRevealed
         if (!meD.isRevealed) {
@@ -592,6 +539,9 @@ const newRound = async () => {
         }
         tx.update(pRef, { hand: remaining, melds: newMelds, isRevealed: willReveal })
       })
+      
+      // Track for undo
+      setMeldsLaidThisTurn(prev => [...prev, { id: meldId, cards }])
       clearSel()
       setMessage('')
     } catch (e) {
@@ -599,10 +549,59 @@ const newRound = async () => {
     }
   }
 
+  // ---------- UNDO MELD (return cards to hand) ----------
+  const undoLastMeld = async () => {
+    if (!meldsLaidThisTurn.length) return
+    const lastMeld = meldsLaidThisTurn[meldsLaidThisTurn.length - 1]
+    
+    try {
+      await runTransaction(db, async (tx) => {
+        const pRef = doc(playersRef, playerId)
+        const meD = (await tx.get(pRef)).data()
+        
+        const meldIdx = meD.melds.findIndex(m => m.id === lastMeld.id)
+        if (meldIdx === -1) throw new Error('Meld not found - may have already been undone')
+        
+        const meld = meD.melds[meldIdx]
+        const newMelds = meD.melds.filter(m => m.id !== lastMeld.id)
+        const newHand = [...meD.hand, ...meld.cards]
+        
+        // Recalculate reveal status
+        let willReveal = false
+        const credits = newMelds.reduce((s, m) => s + revealCreditsForMeld(m, false), 0)
+        if (credits >= 3) willReveal = true
+        
+        tx.update(pRef, { hand: newHand, melds: newMelds, isRevealed: willReveal })
+      })
+      
+      setMeldsLaidThisTurn(prev => prev.slice(0, -1))
+      setMessage('Meld returned to hand.')
+      setTimeout(() => setMessage(''), 2000)
+    } catch (e) {
+      setMessage('Undo failed: ' + (e?.message || e))
+    }
+  }
+
+  // ---------- ADD TO OWN MELD ----------
   const addToMeld = async (meldId) => {
     if (!meState || !selectedCards.length) return
+    
+    // Only allow adding to own melds when revealed or in grace
+    if (!meState.isRevealed && room.status !== 'grace') {
+      setMessage('You must be revealed to add to melds.')
+      return
+    }
+    
+    // FAILSAFE: Check remaining cards
+    const remainingAfterAdd = meState.hand.length - selectedCards.length
+    if (remainingAfterAdd < 1) {
+      setMessage('Failsafe: You must keep at least one card to discard.')
+      return
+    }
+
     const cards = selectedCards
     const tiplu = room.tiplu
+    
     try {
       await runTransaction(db, async (tx) => {
         const pRef = doc(playersRef, playerId)
@@ -611,12 +610,14 @@ const newRound = async () => {
         if (meldIdx === -1) throw new Error('Meld not found')
         const meld = meD.melds[meldIdx]
         const newCards = [...meld.cards, ...cards]
+        
         // Validate extended meld
         let ok = false
         if (meld.kind === 'sequence') ok = isSequence(newCards, meD.isRevealed, tiplu)
         if (meld.kind === 'rankset') ok = isRankSet(newCards, meD.isRevealed, tiplu)
         // Identical sets are always exactly 3 - can't add to them
         if (!ok) throw new Error('Adding these cards creates an invalid meld')
+        
         const newMelds = [...meD.melds]
         newMelds[meldIdx] = { ...meld, cards: newCards }
         const remaining = meD.hand.filter(c => !cards.some(x => x.id === c.id))
@@ -629,30 +630,7 @@ const newRound = async () => {
     }
   }
 
-  const addToExistingMeld = async (targetPlayerId, meldId) => {
-    if (handSel.length !== 1) return; // Usually you add one card at a time
-    if (!meState || handSel.length === 0) return;
-  
-    const cardToAdd = handSel[0];
-    const targetPlayer = players.find(p => p.id === targetPlayerId);
-    const targetMeld = targetPlayer.melds.find(m => m.id === meldId);
-
-    // Logic to update the meld cards
-    const updatedMelds = targetPlayer.melds.map(m => {
-      if (m.id === meldId) {
-        return { ...m, cards: [...m.cards, cardToAdd] };
-      }
-      return m;
-    });
-
-    await updateDoc(doc(playersRef, targetPlayerId), { melds: updatedMelds });
-    // Remove card from your hand
-    await updateDoc(doc(playersRef, playerId), {
-      hand: meState.hand.filter(c => c.id !== cardToAdd.id)
-    });
-    setHandSel([]);
-  };
-
+  // ---------- TENNALA ----------
   const declareTennala = async () => {
     if (!meState || meState.tennalaDeclared) return
     if (meState.hasDrawnThisTurn) { setMessage('Tennala must be declared before your first pickup.'); return }
@@ -666,6 +644,13 @@ const newRound = async () => {
     const entry = Object.values(byKey).find(arr => arr.length >= 3)
     if (!entry) { setMessage('No Tennala found in your hand.'); return }
     const three = entry.slice(0, 3)
+    
+    // FAILSAFE: Check remaining cards after Tennala
+    if (hand.length - 3 < 1) {
+      setMessage('Failsafe: Declaring Tennala would leave you with no cards.')
+      return
+    }
+    
     try {
       await runTransaction(db, async (tx) => {
         const pRef = doc(playersRef, playerId)
@@ -696,7 +681,7 @@ const newRound = async () => {
     }
   }
 
-  // Grace
+  // ---------- GRACE ----------
   const inGrace = room?.status === 'grace'
   useEffect(() => {
     if (!inGrace) return
@@ -710,6 +695,7 @@ const newRound = async () => {
     await updateDoc(doc(playersRef, playerId), { graceDone: true })
   }
 
+  // ---------- SCORING ----------
   const scoreRound = async () => {
     try {
       await runTransaction(db, async (tx) => {
@@ -745,18 +731,22 @@ const newRound = async () => {
     }
   }
 
-  // ---------- Derived ----------
+  // ---------- MANUAL SORT ----------
   const triggerManualSort = async () => {
-    if (!meState?.hand) return;
-    const sorted = sortHand(meState.hand, room.tiplu, meState.isRevealed);
-    await updateDoc(doc(playersRef, playerId), { hand: sorted });
-  }, [meState, room, playerId])
+    if (!meState?.hand) return
+    const sorted = sortHand(meState.hand, room?.tiplu, meState.isRevealed)
+    await updateDoc(doc(playersRef, playerId), { hand: sorted })
+    setMessage('Hand sorted.')
+    setTimeout(() => setMessage(''), 1500)
+  }
 
+  // ---------- DRAG REORDER ----------
   const handleReorder = async (newOrder) => {
-    // Update local state immediately for smoothness, then Firestore
-    await updateDoc(doc(playersRef, playerId), { hand: newOrder });
-  };
+    // Update Firestore with new hand order
+    await updateDoc(doc(playersRef, playerId), { hand: newOrder })
+  }
 
+  // ---------- Derived ----------
   const topDiscard = room?.discard?.length ? room.discard[room.discard.length - 1] : null
   const deckCount = room?.deck?.length || 0
 
@@ -766,7 +756,6 @@ const newRound = async () => {
     return p?.name || 'Unknown'
   }, [currentTurnPlayerId, players])
 
-  // Tiplu info for display
   const tipluDisplay = useMemo(() => {
     if (!room?.tiplu) return null
     if (!tipluVisibleToMe) return null
@@ -796,7 +785,6 @@ const newRound = async () => {
             Enter
           </button>
         </div>
-        {/* Boot messages */}
         {(bootMsg || bootError) && (
           <div className={`pill ${bootError ? 'danger' : ''}`} style={{ display: 'block' }}>
             {bootError ? `Error: ${bootError}` : bootMsg}
@@ -880,13 +868,13 @@ const newRound = async () => {
                 />
               )
             }
-            // Show open seat only if current player isn't already seated
             if (!isSeated && hasEnteredName) {
               return <EmptySeat key={`empty-${idx}`} seatIndex={idx} position={pos} onClick={sitAtSeat} />
             }
             return null
           })}
-          {/* Table center: deck + discard OR deal button OR seat prompt */}
+          
+          {/* Table center */}
           <div className="table-center">
             {!isSeated && hasEnteredName ? (
               <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.6)' }}>
@@ -939,97 +927,92 @@ const newRound = async () => {
         <div className="melds-section">
           {seatedPlayers.map(pl => {
             const credits = meldCreditsTotal(pl.melds)
+            const isMe = pl.id === playerId
+            const canAddToMelds = isMe && (meState?.isRevealed || room?.status === 'grace') && selectedCards.length > 0
             return (
               <div key={pl.id} className="player-melds-row">
                 <div style={{ display: 'flex', flexDirection: 'column', minWidth: 100 }}>
-                  <span className="player-melds-name" style={{ color: pl.id === playerId ? 'var(--accent)' : 'var(--ink)' }}>
+                  <span className="player-melds-name" style={{ color: isMe ? 'var(--accent)' : 'var(--ink)' }}>
                     {pl.name || pl.id.slice(0, 6)}
                   </span>
                   <span className="player-melds-credits">
                     {pl.isRevealed ? 'Revealed' : `${credits}/3 credits`}
                   </span>
                 </div>
-                <MeldsDisplay melds={pl.melds || []} tiplu={room?.tiplu} showWild={tipluVisibleToMe} />
+                <MeldsDisplay 
+                  melds={pl.melds || []} 
+                  tiplu={room?.tiplu} 
+                  showWild={tipluVisibleToMe}
+                  onMeldClick={canAddToMelds ? (meldId) => addToMeld(meldId) : undefined}
+                />
               </div>
             )
           })}
           {!seatedPlayers.length && <span className="muted" style={{ fontSize: '0.85rem' }}>No players seated.</span>}
-        </div>
-        <div className="player-melds">
-          <MeldsDisplay 
-            melds={p.melds} 
-            tiplu={room?.tiplu} 
-            onMeldClick={(meldId) => {
-              // Only allow clicking if it's my turn and I've drawn a card
-              if (isMyTurn && meState?.hasDrawnThisTurn) {
-                addToExistingMeld(p.id, meldId);
-              }
-            }} 
-          />
-        </div>
-        <div className="my-melds-area">
-          <MeldsDisplay 
-            melds={meState?.melds || []} 
-            tiplu={room?.tiplu} 
-            onMeldClick={(meldId) => {
-              if (isMyTurn && meState?.hasDrawnThisTurn) {
-                addToExistingMeld(playerId, meldId);
-              }
-            }} 
-          />
         </div>
       </div>
 
       {/* MY HAND */}
       <div className="panel" style={{ marginTop: 8 }}>
         <div className="row" style={{ justifyContent: 'space-between', marginBottom: 4 }}>
-          <h3>Your Hand ({sortedHand.length})</h3>
-          {handSel.length > 0 && (
-            <div className="row" style={{ gap: 4 }}>
-              <span className="pill accent">{handSel.length} selected</span>
-              <button onClick={clearSel} style={{ padding: '4px 10px', fontSize: '0.75rem' }}>Clear</button>
-            </div>
+          <h3>Your Hand ({meState?.hand?.length || 0})</h3>
+          <div className="row" style={{ gap: 6 }}>
+            {handSel.length > 0 && (
+              <>
+                <span className="pill accent">{handSel.length} selected</span>
+                <button onClick={clearSel} style={{ padding: '4px 10px', fontSize: '0.75rem' }}>Clear</button>
+              </>
+            )}
+            <button onClick={triggerManualSort} style={{ padding: '4px 10px', fontSize: '0.75rem' }}>
+              Sort Hand
+            </button>
+          </div>
+        </div>
+        
+        {/* Hand with drag-and-drop reordering - NO SCROLL */}
+        <div className="hand-area" style={{ overflowX: 'visible', overflowY: 'visible', flexWrap: 'wrap' }}>
+          {meState?.hand?.length > 0 ? (
+            <Reorder.Group 
+              axis="x" 
+              values={meState.hand} 
+              onReorder={handleReorder}
+              style={{ display: 'flex', gap: 4, flexWrap: 'wrap', listStyle: 'none', padding: 0, margin: 0 }}
+            >
+              {meState.hand.map((card) => (
+                <Reorder.Item 
+                  key={card.id} 
+                  value={card}
+                  style={{ listStyle: 'none' }}
+                  whileDrag={{ scale: 1.05, zIndex: 100 }}
+                >
+                  <PlayingCard
+                    card={card}
+                    selected={handSel.includes(card.id)}
+                    onClick={() => toggleSel(card.id)}
+                    wild={tipluVisibleToMe && room?.tiplu && isWildCard(card, room.tiplu)}
+                    dragHandle
+                  />
+                </Reorder.Item>
+              ))}
+            </Reorder.Group>
+          ) : (
+            <span className="muted" style={{ fontSize: '0.85rem' }}>No cards in hand.</span>
           )}
         </div>
-        <div className="hand-area">
-        <Reorder.Group 
-          axis="x" 
-          values={meState?.hand || []} 
-          onReorder={handleReorder}
-          style={{ display: 'flex', gap: '4px', listStyle: 'none', padding: 0 }}
-        >
-          {(meState?.hand || []).map((card) => (
-            <Reorder.Item 
-              key={card.id} 
-              value={card}
-              style={{ position: 'relative' }}
-            >
-              <PlayingCard
-                card={card}
-                selected={handSel.some((s) => s.id === card.id)}
-                onClick={() => toggleSelect(card)}
-                wild={isWildCard(card, room?.tiplu)}
-              />
-            </Reorder.Item>
-          ))}
-        </Reorder.Group>
-      </div>
-        {/* Add to existing meld buttons */}
-        {meState?.melds?.length > 0 && handSel.length > 0 && (
+
+        {/* Undo meld button */}
+        {meldsLaidThisTurn.length > 0 && (
           <div style={{ marginTop: 8 }}>
-            <span style={{ fontSize: '0.75rem', color: 'var(--muted)', marginRight: 6 }}>Add to meld:</span>
-            {meState.melds.filter(m => m.kind !== 'identical').map(m => (
-              <button key={m.id} onClick={() => addToMeld(m.id)} style={{ padding: '4px 8px', fontSize: '0.75rem', marginRight: 4 }}>
-                {m.kind} ({m.cards.map(c => c.rank + suitName(c.suit)).join(', ')})
-              </button>
-            ))}
+            <button onClick={undoLastMeld} style={{ padding: '4px 10px', fontSize: '0.75rem' }}>
+              Undo Last Meld ({meldsLaidThisTurn.length})
+            </button>
           </div>
         )}
       </div>
 
       {/* Messages */}
       {!!message && (
-        <div className={`pill ${message.includes('failed') || message.includes('Invalid') || message.includes('Must') ? 'danger' : 'accent'}`} style={{ marginTop: 8, display: 'block' }}>
+        <div className={`pill ${message.includes('failed') || message.includes('Invalid') || message.includes('Must') || message.includes('Failsafe') ? 'danger' : 'accent'}`} style={{ marginTop: 8, display: 'block' }}>
           {message}
         </div>
       )}
@@ -1102,15 +1085,15 @@ const newRound = async () => {
               Take Discard
             </button>
             <div className="divider" />
-            <button onClick={() => layMeld('sequence')} disabled={handSel.length < 3}>
+            <button onClick={() => layMeld('sequence')} disabled={selectedCards.length < 3}>
               Lay Sequence
             </button>
-            <button onClick={() => layMeld('identical')} disabled={handSel.length !== 3}>
+            <button onClick={() => layMeld('identical')} disabled={selectedCards.length !== 3}>
               Lay Identical
             </button>
             <button
               onClick={() => layMeld('rankset')}
-              disabled={handSel.length < 3 || !meState?.isRevealed}
+              disabled={selectedCards.length < 3 || !meState?.isRevealed}
               title={!meState?.isRevealed ? 'Must reveal first' : ''}
             >
               Lay Rank Set
@@ -1124,12 +1107,10 @@ const newRound = async () => {
               Tennala
             </button>
             <div className="divider" />
-            <button onClick={triggerManualSort}>Sort Hand</button>
-            <div className="divider" />
             <button
               className="btn-danger"
               onClick={() => discardCard(handSel[0])}
-              disabled={!isMyTurn || handSel.length !== 1 || !meState?.hasDrawnThisTurn}
+              disabled={!isMyTurn || handSel.length !== 1 || !meState?.hasDrawnThisTurn || (meState?.hand?.length || 0) <= 1}
             >
               Discard
             </button>
@@ -1138,15 +1119,15 @@ const newRound = async () => {
         {room?.status === 'grace' && (
           <>
             <span className="pill accent">Grace Phase</span>
-            <button onClick={() => layMeld('sequence')} disabled={handSel.length < 3}>
+            <button onClick={() => layMeld('sequence')} disabled={selectedCards.length < 3}>
               Lay Sequence {!meState?.isRevealed ? '(4+ required)' : ''}
             </button>
             {meState?.isRevealed && (
               <>
-                <button onClick={() => layMeld('identical')} disabled={handSel.length !== 3}>
+                <button onClick={() => layMeld('identical')} disabled={selectedCards.length !== 3}>
                   Lay Identical
                 </button>
-                <button onClick={() => layMeld('rankset')} disabled={handSel.length < 3}>
+                <button onClick={() => layMeld('rankset')} disabled={selectedCards.length < 3}>
                   Lay Rank Set
                 </button>
               </>
